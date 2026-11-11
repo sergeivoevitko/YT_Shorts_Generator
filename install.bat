@@ -34,6 +34,10 @@ if not errorlevel 1 (
   if errorlevel 1 echo Could not install the GPU libraries. The app will still work on the processor.
 )
 
+echo Updating the Microsoft Visual C++ runtime (needed by speech recognition)...
+winget install -e --id Microsoft.VCRedist.2015+.x64 --accept-source-agreements --accept-package-agreements >nul 2>nul
+winget upgrade -e --id Microsoft.VCRedist.2015+.x64 --accept-source-agreements --accept-package-agreements >nul 2>nul
+
 echo [3/4] Checking FFmpeg (video engine)...
 where ffmpeg >nul 2>nul
 if errorlevel 1 (

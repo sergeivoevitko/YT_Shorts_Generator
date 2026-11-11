@@ -164,8 +164,16 @@
       <h2>8. Analysis</h2>
       <label class="check"><input type="checkbox" id="use_ai"> <span id="useAiLabel">Let the AI pick the moments and write the hooks</span></label>
       <p class="hint" id="aiHint"></p>
-      <label>Speech recognition model</label>
-      <select id="whisper_model"></select>
+      <label>Speech recognition</label>
+      <select id="speech_engine">
+        <option value="local">On this PC (private, free)</option>
+        <option value="groq">Groq cloud (free, fast, needs a Groq key)</option>
+      </select>
+      <p class="hint" id="speechHint"></p>
+      <div id="whisperRow">
+        <label>Speech recognition model</label>
+        <select id="whisper_model"></select>
+      </div>
       <label>Direction for the AI (optional)</label>
       <textarea id="instructions" rows="2" placeholder="e.g. focus on the funniest moments, avoid the sponsor segment"></textarea>
     </div>

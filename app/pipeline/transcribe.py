@@ -33,8 +33,13 @@ def _worker(path: str, model_name: str, device: str, out_path: str) -> None:
     import json
     import sys
 
+    import os
+
     faulthandler.enable()
-    config.enable_cuda_libraries()
+    config.preload_runtime()
+    if os.environ.get("CLIPFORGE_NO_CUDA_LIBS") != "1":
+        config.enable_cuda_libraries()
+    threads = int(os.environ.get("CLIPFORGE_CPU_THREADS", "0"))
     from faster_whisper import WhisperModel
 
     def say(tag: str, text: str) -> None:
@@ -52,7 +57,7 @@ def _worker(path: str, model_name: str, device: str, out_path: str) -> None:
             say("L", f"graphics card not usable for speech recognition ({exc}); using the processor")
             model = None
     if model is None:
-        model, used = WhisperModel(model_name, device="cpu", compute_type="int8"), "cpu"
+        model, used = WhisperModel(model_name, device="cpu", compute_type="int8", cpu_threads=threads), "cpu"
     say("D", used)
     say("M", "Reading the audio track")
     audio = _load_audio(path)
@@ -78,13 +83,14 @@ def _worker(path: str, model_name: str, device: str, out_path: str) -> None:
             raise
         say("L", f"graphics card failed during speech recognition ({exc}); using the processor")
         say("D", "cpu")
-        words = run(WhisperModel(model_name, device="cpu", compute_type="int8"))
+        words = run(WhisperModel(model_name, device="cpu", compute_type="int8", cpu_threads=threads))
     with open(out_path, "w", encoding="utf-8") as fh:
         json.dump(words, fh)
     sys.stdout.flush()
 
 
-def _run_worker(path: str, model_name: str, device: str, progress, cancelled) -> tuple[list[dict] | None, str]:
+def _run_worker(path: str, model_name: str, device: str, progress, cancelled,
+                extra_env: dict | None = None) -> tuple[list[dict] | None, str]:
     """Start the helper process. Returns (words, error text). words is None if it died."""
     import json
     import os
@@ -95,6 +101,7 @@ def _run_worker(path: str, model_name: str, device: str, progress, cancelled) ->
     tmp = tempfile.mkdtemp(prefix="clipforge_stt_")
     out_path, err_path = os.path.join(tmp, "words.json"), os.path.join(tmp, "stderr.txt")
     env = dict(os.environ, KMP_DUPLICATE_LIB_OK="TRUE", HF_HUB_DISABLE_SYMLINKS_WARNING="1", PYTHONIOENCODING="utf-8")
+    env.update(extra_env or {})
     with open(err_path, "w", encoding="utf-8", errors="replace") as err_file:
         proc = subprocess.Popen(
             [sys.executable, "-m", "app.pipeline.transcribe", path, model_name, device, out_path],
@@ -143,20 +150,130 @@ def _run_worker(path: str, model_name: str, device: str, progress, cancelled) ->
     return words, f"exit code {code}. " + " | ".join(lines[-6:])[-700:]
 
 
+GROQ_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
+CHUNK_SECONDS = 600
+
+
+def transcribe_cloud(path: str, progress: Callable[[float, str], None], cancelled: Callable[[], bool],
+                     duration: float) -> list[dict]:
+    """Speech to text through Groq's free Whisper service. The audio is sent in
+    ten-minute pieces as small mono MP3 files."""
+    import os
+    import subprocess
+    import tempfile
+    import time
+
+    import httpx
+
+    key = config.groq_key()
+    if not key:
+        raise RuntimeError("Cloud speech recognition needs a Groq key. Open AI settings, choose Groq, paste a free "
+                           "key and press Save. You can switch the AI provider back afterwards.")
+    if duration <= 0:
+        from . import reframe
+
+        duration = reframe.probe(path)["duration"]
+    tmp = tempfile.mkdtemp(prefix="clipforge_groq_")
+    words: list[dict] = []
+    count = max(1, int(-(-duration // CHUNK_SECONDS)))
+    try:
+        for k in range(count):
+            if cancelled():
+                raise RuntimeError("Cancelled")
+            offset = k * CHUNK_SECONDS
+            progress(k / count, f"Transcribing speech in the cloud (part {k + 1} of {count})")
+            piece = os.path.join(tmp, f"part{k}.mp3")
+            proc = subprocess.run(
+                [config.ffmpeg_path(), "-hide_banner", "-loglevel", "error", "-y", "-ss", str(offset),
+                 "-t", str(CHUNK_SECONDS), "-i", path, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "32k", piece],
+                capture_output=True)
+            if proc.returncode != 0 or not os.path.exists(piece) or os.path.getsize(piece) < 2000:
+                if k == 0:
+                    raise RuntimeError("Could not read the audio track: " + proc.stderr.decode(errors="replace")[-300:])
+                break
+            data = None
+            for attempt in range(4):
+                started = time.time()
+                with open(piece, "rb") as fh:
+                    resp = httpx.post(
+                        GROQ_URL, headers={"Authorization": f"Bearer {key}"},
+                        files={"file": (f"part{k}.mp3", fh, "audio/mpeg")},
+                        data={"model": "whisper-large-v3-turbo", "response_format": "verbose_json", "language": "en",
+                              "timestamp_granularities[]": ["word", "segment"]},
+                        timeout=httpx.Timeout(300.0, connect=15.0))
+                config.applog(f"[speech] Groq part {k + 1}/{count}: status={resp.status_code} in {time.time() - started:.1f}s")
+                if resp.status_code == 200:
+                    data = resp.json()
+                    break
+                detail = resp.text[:300].replace(key, "***")
+                if resp.status_code in (429, 500, 502, 503) and attempt < 3:
+                    try:
+                        wait = float(resp.headers.get("retry-after", ""))
+                    except ValueError:
+                        wait = 10.0 * (attempt + 1)
+                    if wait > 120:
+                        raise RuntimeError(f"Groq's free speech limit is used up for now (try again in {wait / 60:.0f} minutes).")
+                    config.applog(f"[speech] Groq asked to slow down, waiting {wait:.0f}s: {detail}")
+                    progress(k / count, f"Groq asked to slow down, waiting {wait:.0f}s")
+                    time.sleep(min(max(wait, 2.0), 120.0))
+                    continue
+                raise RuntimeError(f"Groq speech recognition failed ({resp.status_code}: {detail}).")
+            for w in (data or {}).get("words") or []:
+                text = str(w.get("word", "")).strip()
+                if not text:
+                    continue
+                start = float(w["start"]) + offset
+                # Groq stretches a word's end to the next word; cap it so pauses stay visible.
+                end = min(float(w["end"]) + offset, start + 0.18 + 0.075 * len(text))
+                words.append({"w": text, "s": round(start, 3), "e": round(max(end, start + 0.05), 3)})
+    finally:
+        import shutil
+
+        shutil.rmtree(tmp, ignore_errors=True)
+    if not words:
+        raise RuntimeError("Groq found no speech in this video.")
+    progress(1.0, "Transcribing speech in the cloud")
+    return words
+
+
 def transcribe(path: str, model_name: str, progress: Callable[[float, str], None],
-               cancelled: Callable[[], bool], duration_hint: float = 0.0) -> dict:
-    """Speech to text in a helper process. Some failures inside the speech library (a
-    graphics card without its libraries, for one) end the whole process instead of
-    raising an error, and that must never take the app down."""
-    words, err = _run_worker(path, model_name, "auto", progress, cancelled)
-    if words is None:
-        config.applog(f"[speech] the helper process stopped unexpectedly ({err}). Trying again on the processor.")
-        progress(0.0, "Speech recognition failed on the graphics card, retrying on the processor")
-        words, err = _run_worker(path, model_name, "cpu", progress, cancelled)
-    if words is None:
-        config.applog(f"[speech] failed on the processor too ({err})")
-        raise RuntimeError("Speech recognition stopped unexpectedly. Try a smaller speech model under Analysis. "
-                           f"Details: {err}")
+               cancelled: Callable[[], bool], duration_hint: float = 0.0, engine: str = "local") -> dict:
+    """Speech to text. The local engine runs in a helper process: some failures inside
+    the speech library end the whole process instead of raising an error, and that must
+    never take the app down. If every local attempt fails and a Groq key is saved, the
+    free cloud service is used instead."""
+    words = None
+    if engine == "groq":
+        config.applog("[speech] using Groq cloud speech recognition")
+        words = transcribe_cloud(path, progress, cancelled, duration_hint)
+    else:
+        attempts = [
+            ("auto", {}, "first attempt"),
+            ("cpu", {}, "on the processor"),
+            ("cpu", {"CT2_FORCE_CPU_ISA": "AVX2", "CLIPFORGE_NO_CUDA_LIBS": "1", "CLIPFORGE_CPU_THREADS": "4",
+                     "KMP_DUPLICATE_LIB_OK": "FALSE"}, "in safe mode"),
+        ]
+        err = ""
+        for device, env, label in attempts:
+            words, err = _run_worker(path, model_name, device, progress, cancelled, env)
+            if words is not None:
+                break
+            config.applog(f"[speech] local speech recognition stopped unexpectedly {label} ({err})")
+            progress(0.0, "Speech recognition failed, trying another way")
+        if words is None:
+            crashed = "3221225477" in err or "access violation" in err.lower()
+            hint = ""
+            if crashed:
+                hint = (" This kind of crash is usually caused by an outdated Microsoft Visual C++ runtime: run "
+                        "install.bat again (it updates it), then restart the app.")
+            if config.groq_key():
+                config.applog("[speech] falling back to Groq cloud speech recognition." + hint)
+                progress(0.0, "Local speech recognition is not working on this PC, using the Groq cloud instead")
+                words = transcribe_cloud(path, progress, cancelled, duration_hint)
+            else:
+                raise RuntimeError("Speech recognition could not start on this PC." + hint + " Or choose 'Groq cloud' "
+                                   "as the speech engine under Analysis (free, needs a Groq key in AI settings). "
+                                   f"Details: {err}")
 
     # Keep timestamps monotonic and give every word a visible duration.
     for i, w in enumerate(words):

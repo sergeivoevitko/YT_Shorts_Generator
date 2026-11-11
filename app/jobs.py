@@ -30,7 +30,7 @@ DEFAULTS = {
     "story_theme": "motivation", "story_tone": "cinematic", "story_text": "", "story_seconds": 40,
     "num_videos": 1, "voice": voice.DEFAULT_VOICE, "voice_speed": 0.95, "transition": "crossfade",
     "footage_order": "upload", "ambient_pad": True,
-    "whisper_model": "small.en", "use_ai": True, "instructions": "",
+    "whisper_model": "small.en", "speech_engine": "local", "use_ai": True, "instructions": "",
 }
 
 STAGES = [("download", 0.10), ("transcribe", 0.30), ("analyze", 0.08), ("render", 0.52)]
@@ -50,6 +50,7 @@ def clean_settings(raw: dict) -> dict:
     s["aspect"] = s["aspect"] if s["aspect"] in render.ASPECTS else "9:16"
     s["resolution"] = s["resolution"] if s["resolution"] in render.RESOLUTIONS else "1080p"
     s["quality"] = s["quality"] if s["quality"] in render.QUALITY else "balanced"
+    s["speech_engine"] = "groq" if s["speech_engine"] == "groq" else "local"
     s["encoder"] = "cpu" if s["encoder"] == "cpu" else "auto"
     s["fps"] = str(s["fps"]) if str(s["fps"]) in ("30", "60") else "source"
     s["num_clips"] = _num(s["num_clips"], 1, 20, 5, int)
@@ -383,7 +384,7 @@ class JobManager:
                                        lambda p, msg: vshare(p * 0.7, msg))
                 vshare(0.7, "Timing the captions to the voice")
                 heard = transcribe.transcribe(str(wav), s["whisper_model"], lambda p, msg: vshare(0.7 + p * 0.3, "Timing the captions to the voice"),
-                                              cancelled, dur)["words"]
+                                              cancelled, dur, s["speech_engine"])["words"]
                 narrations[st["script"]] = (str(wav), dur, story.align(st["script"], heard, dur))
                 words_per_sec = len(st["script"].split()) / max(dur, 1)
                 log(f"Voiceover {i}: {dur:.1f}s, {len(st['script'].split())} words ({words_per_sec:.1f} per second).")
@@ -466,7 +467,8 @@ class JobManager:
         else:
             if not info["has_audio"]:
                 raise RuntimeError("This video has no audio track, so there is no speech to build clips from.")
-            transcript = transcribe.transcribe(meta["path"], s["whisper_model"], up, cancelled, info["duration"])
+            transcript = transcribe.transcribe(meta["path"], s["whisper_model"], up, cancelled, info["duration"],
+                                               s["speech_engine"])
             tpath.write_text(json.dumps(transcript), encoding="utf-8")
             log(f"Transcribed {len(transcript['words'])} words in {len(transcript['sentences'])} sentences.")
         words, sentences = transcript["words"], transcript["sentences"]

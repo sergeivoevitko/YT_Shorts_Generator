@@ -107,6 +107,11 @@ Cropping, captions and other effects still run on the processor, so the speed-up
 
 ## Troubleshooting
 
+- **Speech recognition fails on one PC but works on another** ("stopped unexpectedly", exit code 3221225477):
+  the usual cause is an outdated Microsoft Visual C++ runtime on that PC. Run `install.bat` again, which
+  updates it, then restart the app. Until then, under Analysis set **Speech recognition** to **Groq cloud**:
+  it is free, needs only a Groq key saved in AI settings, and is much faster than a laptop processor. If a
+  Groq key is saved, the app also switches to it by itself when local speech recognition fails.
 - **Something went wrong and you want to see why**: press **Log** in the top right. It shows everything the
   app did, including every AI request and the exact error text. Press Copy to share it. Keys are never logged.
   The same text is in `workspace/clipforge.log`.

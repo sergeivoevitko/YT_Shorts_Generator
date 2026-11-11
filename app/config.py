@@ -104,6 +104,82 @@ def ffmpeg_capabilities() -> dict:
     return caps
 
 
+def preload_runtime() -> None:
+    """Windows only: load the system's Microsoft C++ runtime before any library brings
+    its own. Libraries built with a recent compiler crash (access violation) when an
+    older copy of msvcp140.dll is the one in the process."""
+    import sys
+
+    if not sys.platform.startswith("win"):
+        return
+    import ctypes
+
+    system32 = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32"
+    for name in ("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll", "msvcp140_1.dll", "concrt140.dll"):
+        try:
+            ctypes.WinDLL(str(system32 / name))
+        except OSError:
+            pass
+
+
+def _file_version(path: str) -> str:
+    """Version of a Windows DLL as 'major.minor.build', or '' if unknown."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        ver = ctypes.windll.version
+        size = ver.GetFileVersionInfoSizeW(path, None)
+        if not size:
+            return ""
+        buf = ctypes.create_string_buffer(size)
+        ver.GetFileVersionInfoW(path, 0, size, buf)
+        ptr, length = ctypes.c_void_p(), wintypes.UINT()
+        if not ver.VerQueryValueW(buf, "\\", ctypes.byref(ptr), ctypes.byref(length)):
+            return ""
+        info = ctypes.cast(ptr, ctypes.POINTER(ctypes.c_uint32 * 13)).contents
+        ms, ls = info[2], info[3]
+        return f"{ms >> 16}.{ms & 0xFFFF}.{ls >> 16}"
+    except Exception:
+        return ""
+
+
+def system_report() -> dict:
+    """Facts about this machine that matter when something crashes."""
+    import platform
+    import sys
+    from importlib import metadata
+
+    report = {"python": sys.version.split()[0], "os": platform.platform(), "cpu": platform.processor() or platform.machine()}
+    for pkg in ("ctranslate2", "faster-whisper", "onnxruntime", "kokoro-onnx", "numpy", "opencv-python-headless", "yt-dlp"):
+        try:
+            report[pkg] = metadata.version(pkg)
+        except Exception:
+            report[pkg] = "missing"
+    report["msvc_runtime"] = ""
+    if sys.platform.startswith("win"):
+        report["msvc_runtime"] = _file_version(str(Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "msvcp140.dll")) or "not installed"
+    return report
+
+
+def msvc_runtime_old() -> bool:
+    """True when the Microsoft C++ runtime is missing or older than 14.40 (Windows only)."""
+    import sys
+
+    if not sys.platform.startswith("win"):
+        return False
+    ver = system_report()["msvc_runtime"]
+    try:
+        major, minor = (int(x) for x in ver.split(".")[:2])
+    except ValueError:
+        return True
+    return (major, minor) < (14, 40)
+
+
+def groq_key() -> str:
+    return ((load_settings().get("providers") or {}).get("groq") or {}).get("api_key", "").strip()
+
+
 GPU_ENCODERS = [("h264_nvenc", "NVIDIA"), ("h264_qsv", "Intel Quick Sync"), ("h264_amf", "AMD"),
                 ("h264_videotoolbox", "Apple")]
 
@@ -188,6 +264,8 @@ def system_status() -> dict:
         "api_key_set": bool(get_api_key()),
         "ai": _ai_status(),
         "gpu": gpu_status(),
+        "groq_key": bool(groq_key()),
+        "msvc_runtime_old": msvc_runtime_old(),
         "model": get_model(),
         "face_model": (MODELS_DIR / "yunet.onnx").exists(),
     }

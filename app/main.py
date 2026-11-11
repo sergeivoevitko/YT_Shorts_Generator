@@ -19,6 +19,7 @@ from .pipeline import captions, llm, render, story, transcribe, voice
 
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")           # two math libraries in one process must not abort it
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")  # harmless Windows notice, hides real messages
+config.preload_runtime()
 config.enable_cuda_libraries()
 app = FastAPI(title="ClipForge")
 manager = JobManager()
@@ -350,6 +351,11 @@ def main() -> None:
     port = int(os.environ.get("CLIPFORGE_PORT", "8765"))
     if os.environ.get("CLIPFORGE_NO_BROWSER") != "1":
         threading.Timer(1.2, lambda: webbrowser.open(f"http://{host}:{port}")).start()
+    report = config.system_report()
+    config.applog("[system] " + ", ".join(f"{k}={v}" for k, v in report.items()))
+    if config.msvc_runtime_old():
+        config.applog("[system] WARNING: the Microsoft Visual C++ runtime on this PC is old or missing "
+                      f"({report['msvc_runtime']}). Speech recognition can crash because of it. Run install.bat again to update it.")
     config.applog(f"[server] started on http://{host}:{port}, ffmpeg={config.ffmpeg_path() or 'missing'}, "
                   f"ai={llm.current()['name']}/{llm.current()['model']}")
     print(f"\n  ClipForge is running at http://{host}:{port}\n  Keep this window open. Press Ctrl+C to stop.\n")

@@ -89,6 +89,13 @@ function refreshHints() {
   $("sizeHint").textContent = `${w} x ${h} pixels. ${ASPECT_NOTE[settings.aspect]}.` +
     (short > 1080 ? " Sizes above 1080p are upscaled unless the source video is that sharp, and render much slower." : "");
   const story = settings.mode === "story";
+  const cloud = settings.speech_engine === "groq";
+  $("whisperRow").hidden = cloud;
+  $("speechHint").textContent = cloud
+    ? (cfg.status.groq_key ? "The audio is sent to Groq for transcription. A 20 minute video takes well under a minute."
+       : "No Groq key is saved yet. Open AI settings, choose Groq, paste a free key and press Save. You can switch the AI provider back afterwards.")
+    : (cfg.status.msvc_runtime_old ? "Warning: the Microsoft Visual C++ runtime on this PC is old or missing, which can crash local speech recognition. Run install.bat again to update it, or use Groq cloud. "
+       : "") + (cfg.status.groq_key ? "If it fails on this PC, the app switches to Groq cloud automatically." : "");
   const g = cfg.status.gpu;
   $("gpuHint").textContent = settings.encoder === "cpu" ? "Rendering uses the processor only."
     : [g.encoder ? `Rendering uses your ${g.encoder_name} graphics card.` : "No supported graphics card encoder was found, so rendering uses the processor.",
@@ -153,7 +160,7 @@ async function init() {
   $("whisper_model").replaceChildren(...Object.entries(cfg.whisper_models).map(([k, v]) => el("option", { value: k, textContent: v })));
   $("model").replaceChildren(...Object.entries(cfg.claude_models).map(([k, v]) => el("option", { value: k, textContent: v })));
 
-  for (const id of ["encoder", "resolution", "fps", "quality", "caption_position", "hook_style", "whisper_model", "instructions"]) bind(id, id);
+  for (const id of ["speech_engine", "encoder", "resolution", "fps", "quality", "caption_position", "hook_style", "whisper_model", "instructions"]) bind(id, id);
   bind("num_clips", "num_clips", "num", "numClipsVal");
   bind("min_len", "min_len", "num"); bind("max_len", "max_len", "num"); bind("hook_seconds", "hook_seconds", "num");
   bind("caption_scale", "caption_scale", "num", "capScaleVal", (v) => Math.round(v * 100) + "%");
