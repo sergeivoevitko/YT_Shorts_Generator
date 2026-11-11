@@ -1,6 +1,10 @@
 # ClipForge
 
-Paste a YouTube link, get a batch of ready-to-post short videos.
+Two tools in one app:
+
+- **YouTube to shorts**: paste a YouTube link, get a batch of ready-to-post short videos.
+- **My footage + story**: upload your own clips (drone shots, landscapes), get a narrated video with a
+  voiceover, captions and music.
 
 ClipForge downloads the video, transcribes it, finds the strongest moments, then cuts each one into a
 vertical short with a hook, face-following framing, jump cuts, punch-in zooms and animated captions.
@@ -36,6 +40,23 @@ rendered again.
 transcribing a second time. Useful for trying another caption style or aspect ratio.
 
 Files are saved in `workspace/jobs/<run>/`, together with `post_text.txt` (titles and captions for posting).
+
+## My footage + story
+
+Switch to **My footage + story** at the top left.
+
+1. Choose several of your video clips at once.
+2. Pick a theme and tone and let the app supply the story, or paste your own text.
+3. Choose the narrator voice, length (20 to 60 seconds), and how many videos to make.
+4. Press **Generate narrated video**.
+
+The app looks through each clip for its sharpest, steadiest stretches, records the voiceover with a voice
+model that runs on your computer, changes shot on sentence boundaries, and adds captions timed to the voice.
+Upload a music file under Edits and it is lowered automatically whenever the narrator speaks; without one,
+a soft ambient sound can be added instead.
+
+The first run downloads the voice model (about 350 MB, one time). No account or key is needed for the voice.
+Stories are written by Claude when an API key is set; without one, a built-in story for the chosen theme is used.
 
 ## Turning on Claude (recommended)
 
@@ -82,3 +103,5 @@ Cost is typically a few cents per video and depends on video length and the mode
 - The score is an estimate of short-form potential, not a prediction of views.
   With Claude, each clip also shows separate hook, flow, value and trend scores.
 - Bundled fonts and the face detection model are open source; see `assets/THIRD_PARTY.md`.
+- The narrator voice is Kokoro (Apache 2.0), downloaded on first use into `workspace/models/`.
+- Footage shot in a flat or log color profile is not color graded by the app; grade it first if needed.

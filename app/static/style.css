@@ -117,3 +117,11 @@ dialog.wide { width: min(860px, 94vw); }
 .word.edge { background: rgba(255,225,0,.16); }
 .word.changed { color: var(--good); }
 .word.hidden { text-decoration: line-through; color: var(--bad); }
+
+body[data-mode=story] .only-clips, body[data-mode=clips] .only-story { display: none !important; }
+.seg.big button { padding: 11px 6px; font-size: 14.5px; font-weight: 600; }
+.drop { display: block; border: 1.5px dashed var(--line); border-radius: 12px; padding: 16px; text-align: center; cursor: pointer; margin: 0 0 4px; }
+.drop:hover { border-color: var(--accent); }
+.drop input { display: none; }
+.drop b { display: block; color: var(--text); font-size: 14.5px; }
+.drop span { font-size: 12.5px; }

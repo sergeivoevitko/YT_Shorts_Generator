@@ -12,7 +12,7 @@ import uuid
 from pathlib import Path
 
 from . import config
-from .pipeline import analyze, captions, download, reframe, render, transcribe
+from .pipeline import analyze, captions, download, footage, reframe, render, story, transcribe, voice
 
 DEFAULTS = {
     "aspect": "9:16", "resolution": "1080p", "fps": 30, "quality": "balanced",
@@ -26,10 +26,15 @@ DEFAULTS = {
     "remove_fillers": True, "sfx": True, "sfx_volume": 0.5, "emojis": True,
     "logo_enabled": False, "logo_position": "top-right", "logo_scale": 0.16, "logo_opacity": 0.9,
     "brand_color": "", "brand_font": "", "handle_text": "",
+    # "My footage + story" mode
+    "story_theme": "motivation", "story_tone": "cinematic", "story_text": "", "story_seconds": 40,
+    "num_videos": 1, "voice": voice.DEFAULT_VOICE, "voice_speed": 0.95, "transition": "crossfade",
+    "footage_order": "upload", "ambient_pad": True,
     "whisper_model": "small.en", "use_ai": True, "instructions": "",
 }
 
 STAGES = [("download", 0.10), ("transcribe", 0.30), ("analyze", 0.08), ("render", 0.52)]
+STORY_STAGES = [("footage", 0.12), ("story", 0.05), ("voice", 0.23), ("render", 0.60)]
 
 
 def _num(value, lo, hi, default, cast=float):
@@ -60,6 +65,16 @@ def clean_settings(raw: dict) -> dict:
     s["zoom_amount"] = _num(s["zoom_amount"], 1.03, 1.4, 1.12)
     s["music_volume"] = _num(s["music_volume"], 0.0, 1.0, 0.12)
     s["whisper_model"] = s["whisper_model"] if s["whisper_model"] in transcribe.MODELS else "small.en"
+    s["story_theme"] = s["story_theme"] if s["story_theme"] in story.THEMES else "motivation"
+    s["story_tone"] = s["story_tone"] if s["story_tone"] in story.TONES else "cinematic"
+    s["story_text"] = str(s["story_text"])[:4000]
+    s["story_seconds"] = _num(s["story_seconds"], 15, 90, 40)
+    s["num_videos"] = _num(s["num_videos"], 1, 8, 1, int)
+    s["voice"] = s["voice"] if s["voice"] in voice.VOICES else voice.DEFAULT_VOICE
+    s["voice_speed"] = _num(s["voice_speed"], 0.7, 1.3, 0.95)
+    s["transition"] = s["transition"] if s["transition"] in ("crossfade", "cut") else "crossfade"
+    s["footage_order"] = s["footage_order"] if s["footage_order"] in ("upload", "best") else "upload"
+    s["ambient_pad"] = bool(s["ambient_pad"])
     s["sfx_volume"] = _num(s["sfx_volume"], 0.0, 1.5, 0.5)
     s["logo_scale"] = _num(s["logo_scale"], 0.05, 0.5, 0.16)
     s["logo_opacity"] = _num(s["logo_opacity"], 0.1, 1.0, 0.9)
@@ -99,7 +114,7 @@ class Job:
             "id": self.id, "status": self.status, "stage": self.stage, "progress": round(self.progress, 4),
             "message": self.message, "error": self.error, "title": self.title, "engine": self.engine,
             "created": self.created, "finished": self.finished, "clip_count": len(self.clips),
-            "source_url": self.source.get("url", ""),
+            "source_url": self.source.get("url", ""), "kind": self.source.get("kind", "clips"),
         }
         if full:
             data.update({"settings": self.settings, "clips": self.clips, "log": self.log[-200:]})
@@ -200,6 +215,8 @@ class JobManager:
             try:
                 if task:
                     self._run_clip(job, task["index"], task["edit"])
+                elif job.source.get("kind") == "story":
+                    self._run_story(job)
                 else:
                     self._run(job)
                 job.status, job.stage, job.progress = "done", "done", 1.0
@@ -285,6 +302,103 @@ class JobManager:
             if old.get(key) and old[key] != result[key]:
                 (job.dir / old[key]).unlink(missing_ok=True)
         job.clips[index - 1] = result
+        _write_post_text(job)
+
+    def _run_story(self, job: Job) -> None:
+        """Narrated video from the user's own footage."""
+        s = job.settings
+        cancelled = lambda: job.cancel_flag
+        offsets, acc = {}, 0.0
+        for name, weight in STORY_STAGES:
+            offsets[name] = (acc, weight)
+            acc += weight
+
+        def log(msg: str) -> None:
+            job.log.append(f"[{time.strftime('%H:%M:%S')}] {msg}")
+
+        def stage(name: str):
+            base, weight = offsets[name]
+            job.stage = name
+
+            def update(p: float, msg: str) -> None:
+                if job.cancel_flag:
+                    raise RuntimeError("Cancelled")
+                job.progress = base + weight * max(0.0, min(p, 1.0))
+                job.message = msg
+            return update
+
+        caps = config.ffmpeg_capabilities()
+        if not caps["found"]:
+            raise RuntimeError("FFmpeg was not found. Run install.bat again or install FFmpeg and restart the app.")
+        if not caps["libass"] and (s["caption_style"] != "none" or s["hook_style"] != "none"):
+            raise RuntimeError("This FFmpeg build cannot draw subtitles (libass is missing). "
+                               "Install the full FFmpeg build (winget install Gyan.FFmpeg) and restart.")
+
+        up = stage("footage")
+        files = [f for f in job.source.get("files", []) if Path(f).exists()]
+        if not files:
+            raise RuntimeError("The uploaded footage is no longer available. Upload the clips again.")
+        clips = []
+        for i, path in enumerate(files):
+            up(i / len(files), f"Looking through your footage ({i + 1} of {len(files)})")
+            try:
+                clips.append(footage.analyze_clip(path))
+            except Exception as exc:
+                log(f"Skipped {Path(path).name}: {exc}")
+        clips = [c for c in clips if c["duration"] >= 1.0]
+        if not clips:
+            raise RuntimeError("None of the uploaded files could be read as video.")
+        log(f"Footage: {len(clips)} clips, {sum(c['duration'] for c in clips):.0f} seconds in total.")
+
+        up = stage("story")
+        n = s["num_videos"]
+        up(0.2, "Writing the story" if not s["story_text"].strip() else "Preparing your text")
+        stories, origin = story.get_stories(n, s, log)
+        job.engine = origin
+        job.title = stories[0]["title"] if n == 1 else f"{n} narrated videos"
+        (job.dir / "stories.json").write_text(json.dumps(stories, indent=2), encoding="utf-8")
+        job.save()
+
+        fonts = job.dir / "fonts"
+        if not fonts.exists():
+            shutil.copytree(config.FONTS_DIR, fonts)
+        if s.get("logo_enabled") and not s.get("logo_path"):
+            logo = config.WORKSPACE / "brand" / "logo.png"
+            if logo.exists():
+                shutil.copy(logo, job.dir / "logo.png")
+                s["logo_path"] = str(job.dir / "logo.png")
+        music = job.source.get("music")
+        job.clips = []
+        narrations: dict[str, tuple[str, float, list]] = {}
+        for i, st in enumerate(stories, start=1):
+            up = stage("voice")
+            vshare = lambda p, msg, i=i: up((i - 1 + p) / n, msg)
+            if st["script"] not in narrations:  # pasted text is voiced once and reused
+                wav = job.dir / f"narration_{i:02d}.wav"
+                dur = voice.synthesize(st["script"], s["voice"], s["voice_speed"], wav,
+                                       lambda p, msg: vshare(p * 0.7, msg))
+                vshare(0.7, "Timing the captions to the voice")
+                heard = transcribe.transcribe(str(wav), s["whisper_model"], lambda p, msg: vshare(0.7 + p * 0.3, "Timing the captions to the voice"),
+                                              cancelled, dur)["words"]
+                narrations[st["script"]] = (str(wav), dur, story.align(st["script"], heard, dur))
+                words_per_sec = len(st["script"].split()) / max(dur, 1)
+                log(f"Voiceover {i}: {dur:.1f}s, {len(st['script'].split())} words ({words_per_sec:.1f} per second).")
+            wav_path, dur, words = narrations[st["script"]]
+            st["engine"] = origin
+
+            up = stage("render")
+            if s["caption_style"] == "none":
+                style = None
+            elif s["caption_style"] == "mix":
+                style = captions.MIX_ORDER[(i - 1) % len(captions.MIX_ORDER)]
+            else:
+                style = s["caption_style"]
+            result = footage.render_story(st, words, wav_path, dur, clips, s, job.dir, i, style, music,
+                                          lambda p, msg, i=i: up((i - 1 + p) / n, f"{msg} ({i} of {n})"),
+                                          cancelled, log)
+            job.clips.append(result)
+            job.save()
+        shutil.rmtree(fonts, ignore_errors=True)
         _write_post_text(job)
 
     def _run(self, job: Job) -> None:
@@ -394,8 +508,9 @@ def _write_post_text(job: Job) -> None:
     lines = [f"{job.title}", ""]
     for c in job.clips:
         tags = " ".join("#" + h for h in c["hashtags"])
-        lines += [f"=== {c['file']}  (score {c['score']}, {c['duration']}s) ===", f"Title: {c['title']}",
-                  f"Hook: {c['hook']}", f"Caption: {c['description']} {tags}".rstrip(), f"Why: {c['reason']}", ""]
+        lines += [f"=== {c['file']}  ({c['duration']}s) ===", f"Title: {c['title']}",
+                  f"Hook: {c['hook']}", f"Caption: {c['description']} {tags}".rstrip()]
+        lines += [f"Script: {c['transcript']}", ""] if c.get("kind") == "story" else [f"Score: {c['score']}. {c['reason']}", ""]
     (job.dir / "post_text.txt").write_text("\n".join(lines), encoding="utf-8")
 
 

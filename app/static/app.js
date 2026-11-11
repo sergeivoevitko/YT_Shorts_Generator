@@ -25,6 +25,8 @@ const REFRAME = {
   blur: ["Fit + blur", "Keeps the whole frame visible over a blurred copy of itself. Best for screen recordings and gameplay."],
 };
 const STAGES = [["download", "Download"], ["transcribe", "Transcribe"], ["analyze", "Find moments"], ["render", "Edit + render"]];
+const STORY_STAGES = [["footage", "Review footage"], ["story", "Write story"], ["voice", "Voiceover"], ["render", "Edit + render"]];
+const MODES = [["clips", "YouTube to shorts"], ["story", "My footage + story"]];
 const RES_SHORT = { "720p": 720, "1080p": 1080, "1440p": 1440, "4k": 2160 };
 
 function save() { localStorage.setItem("clipforge.settings", JSON.stringify(settings)); }
@@ -86,9 +88,21 @@ function refreshHints() {
   const h = aw <= ah ? Math.round(short * ah / aw / 2) * 2 : short;
   $("sizeHint").textContent = `${w} x ${h} pixels. ${ASPECT_NOTE[settings.aspect]}.` +
     (short > 1080 ? " Sizes above 1080p are upscaled unless the source video is that sharp, and render much slower." : "");
-  $("reframeHint").textContent = REFRAME[settings.reframe][1];
+  const story = settings.mode === "story";
+  document.body.dataset.mode = settings.mode;
+  $("reframeHint").textContent = story
+    ? (settings.reframe === "blur" ? REFRAME.blur[1] : "Crops the middle of each clip to fill the frame. Use Fit + blur to keep whole landscape shots visible.")
+    : REFRAME[settings.reframe][1];
+  $("useAiLabel").textContent = story ? "Let Claude write the story" : "Let Claude pick the moments and write the hooks";
+  if (!$("go").disabled) $("go").textContent = goLabel();
+  $("storyHint").textContent = settings.story_text.trim()
+    ? `Your text: about ${Math.round(settings.story_text.trim().split(/\s+/).length / 2.5)} seconds when spoken. Length and theme are ignored.`
+    : cfg.status.api_key_set && settings.use_ai ? "Claude will write an original story for each video."
+    : "Without an API key, one of the built-in stories for this theme is used.";
   const keyed = cfg.status.api_key_set;
-  $("aiHint").textContent = !settings.use_ai ? "Moments are picked by offline scoring (keywords, pacing, clean endings)."
+  $("aiHint").textContent = story ? (keyed && settings.use_ai ? `Stories are written by ${cfg.claude_models[cfg.status.model] || cfg.status.model}. The speech model below is used to time the captions to the voice.`
+      : "Built-in stories are used unless you paste your own text or add an API key under AI settings.")
+    : !settings.use_ai ? "Moments are picked by offline scoring (keywords, pacing, clean endings)."
     : keyed ? `Using ${cfg.claude_models[cfg.status.model] || cfg.status.model}.`
     : "No API key saved yet, so offline scoring is used. Add a key under AI settings for much better picks and hooks.";
 }
@@ -108,8 +122,21 @@ async function init() {
   cfg = await api("/api/config");
   let stored = {};
   try { stored = JSON.parse(localStorage.getItem("clipforge.settings") || "{}"); } catch (e) { /* ignore */ }
-  settings = Object.assign({}, cfg.defaults, stored);
+  settings = Object.assign({ mode: "clips" }, cfg.defaults, stored);
   pills();
+  segmented("mode", MODES, "mode", refreshHints);
+  const options = (id, map) => $(id).replaceChildren(...Object.entries(map).map(([k, v]) => el("option", { value: k, textContent: v })));
+  options("story_theme", cfg.story_themes); options("story_tone", cfg.story_tones); options("voice", cfg.voices);
+  for (const id of ["story_theme", "story_tone", "story_text", "voice", "transition", "footage_order"]) bind(id, id);
+  bind("story_seconds", "story_seconds", "num", "storySecVal", (v) => `about ${v} seconds`);
+  bind("num_videos", "num_videos", "num", "numVideosVal");
+  bind("voice_speed", "voice_speed", "num", "voiceSpeedVal", (v) => Math.round(v * 100) + "%");
+  bind("ambient_pad", "ambient_pad", "check");
+  $("footage").onchange = () => {
+    const files = [...$("footage").files];
+    const mb = files.reduce((a, f) => a + f.size, 0) / 1e6;
+    $("footageName").textContent = files.length ? `${files.length} clip${files.length > 1 ? "s" : ""} selected (${mb.toFixed(0)} MB)` : "Select several files at once: drone shots, landscapes, b-roll";
+  };
 
   segmented("aspect", cfg.aspects.map((a) => [a, a, SHAPES[a]]), "aspect", refreshHints);
   segmented("reframe", Object.entries(REFRAME).map(([k, v]) => [k, v[0]]), "reframe", refreshHints);
@@ -259,12 +286,20 @@ function fileInput(id, nameId, clearId, placeholder) {
   $(clearId).onclick = () => { $(id).value = ""; $(id).onchange(); };
 }
 
+function goLabel() { return settings.mode === "story" ? "Generate narrated video" : "Generate shorts"; }
+
 async function submit(reuse) {
   $("formError").textContent = "";
   const form = new FormData();
   form.append("settings", JSON.stringify(settings));
   if (reuse) {
     form.append("reuse", currentJob);
+  } else if (settings.mode === "story") {
+    const files = [...$("footage").files];
+    if (!files.length) { $("formError").textContent = "Choose at least one video clip of your footage first."; return; }
+    form.append("mode", "story");
+    for (const f of files) form.append("footage", f);
+    if (!cfg.voice_model) $("formError").textContent = "";
   } else if ($("video").files[0]) {
     form.append("video", $("video").files[0]);
   } else if ($("url").value.trim()) {
@@ -275,7 +310,7 @@ async function submit(reuse) {
   }
   if ($("music").files[0]) form.append("music", $("music").files[0]);
   $("go").disabled = true;
-  $("go").textContent = $("video").files[0] && !reuse ? "Uploading..." : "Starting...";
+  $("go").textContent = !reuse && (settings.mode === "story" || $("video").files[0]) ? "Uploading..." : "Starting...";
   try {
     const job = await api("/api/jobs", { method: "POST", body: form });
     watch(job.id);
@@ -283,7 +318,7 @@ async function submit(reuse) {
   } catch (err) {
     $("formError").textContent = err.message;
     $("go").disabled = false;
-    $("go").textContent = "Generate shorts";
+    $("go").textContent = goLabel();
   }
 }
 
@@ -306,11 +341,12 @@ function render(job) {
   $("empty").hidden = true;
   $("jobCard").hidden = job.status === "done" && !job.message.startsWith("Re-render failed");
   $("go").disabled = busy;
-  $("go").textContent = busy ? "Working..." : "Generate shorts";
+  $("go").textContent = busy ? "Working..." : goLabel();
   $("cancel").hidden = !busy;
   $("jobTitle").textContent = job.title || (job.status === "queued" ? "Queued" : "Working on your video");
-  const at = STAGES.findIndex(([k]) => k === job.stage);
-  $("steps").replaceChildren(...STAGES.map(([k, label], i) =>
+  const stages = job.kind === "story" ? STORY_STAGES : STAGES;
+  const at = stages.findIndex(([k]) => k === job.stage);
+  $("steps").replaceChildren(...stages.map(([k, label], i) =>
     el("div", { className: "step" + (busy && i === at ? " active" : (i < at || job.status === "done") ? " done" : ""), textContent: label })));
   $("barFill").style.width = Math.round(job.progress * 100) + "%";
   $("jobMsg").textContent = job.status === "error" ? "" : `${job.message}${busy ? ` (${Math.round(job.progress * 100)}%)` : ""}`;
@@ -321,8 +357,13 @@ function render(job) {
   $("results").hidden = clips.length === 0;
   $("remix").hidden = $("openFolder").hidden = busy;
   if (clips.length) {
-    const how = job.engine === "claude" ? "picked by Claude" : "picked by offline scoring";
-    $("resultsTitle").textContent = `${job.title || "Your video"}: ${clips.length} clip${clips.length > 1 ? "s" : ""}, ${how}`;
+    if (job.kind === "story") {
+      const how = { claude: "story by Claude", pasted: "your own text", builtin: "built-in story" }[job.engine] || "";
+      $("resultsTitle").textContent = `${clips.length} narrated video${clips.length > 1 ? "s" : ""}${how ? ", " + how : ""}`;
+    } else {
+      const how = job.engine === "claude" ? "picked by Claude" : "picked by offline scoring";
+      $("resultsTitle").textContent = `${job.title || "Your video"}: ${clips.length} clip${clips.length > 1 ? "s" : ""}, ${how}`;
+    }
     const box = $("clips");
     const sig = job.id + "|" + clips.map((c) => c.file).join("|");
     if (box.dataset.sig !== sig) {
@@ -333,6 +374,7 @@ function render(job) {
 }
 
 function clipCard(jobId, c) {
+  const isStory = c.kind === "story";
   const base = `/media/${jobId}/`;
   const tags = c.hashtags.map((h) => "#" + h).join(" ");
   const post = `${c.title}\n\n${c.description}\n\n${tags}`.trim();
@@ -353,18 +395,18 @@ function clipCard(jobId, c) {
     el("video", { src: base + c.file, poster: base + c.thumb, controls: true, preload: "none", playsInline: true }),
     el("div", { className: "body" }, [
       el("div", { className: "meta" }, [
-        el("span", { className: "score" + cls, textContent: `Score ${c.score}`, title: "Estimated short-form potential, 0 to 100" }),
+        ...(isStory ? [] : [el("span", { className: "score" + cls, textContent: `Score ${c.score}`, title: "Estimated short-form potential, 0 to 100" })]),
         el("span", { textContent: `${Math.round(c.duration)}s` }),
         el("span", { textContent: `${c.width}x${c.height}` }),
         el("span", { textContent: styleName }),
-        el("span", { textContent: `from ${mins(c.source_start)}` }),
+        ...(isStory ? [] : [el("span", { textContent: `from ${mins(c.source_start)}` })]),
       ]),
       subs,
       el("div", { className: "title", textContent: c.title }),
       el("div", { className: "text", textContent: `${c.description} ${tags}` }),
-      el("div", { className: "why", textContent: c.reason }),
+      el("div", { className: "why", textContent: isStory ? c.transcript : c.reason }),
       el("div", { className: "actions" }, [
-        el("a", { className: "dl", href: base + c.file + "?download=1", textContent: "Download" }), edit, copy]),
+        el("a", { className: "dl", href: base + c.file + "?download=1", textContent: "Download" }), ...(isStory ? [] : [edit]), copy]),
     ]),
   ]);
 }

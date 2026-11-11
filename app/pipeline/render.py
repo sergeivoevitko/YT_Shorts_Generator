@@ -146,6 +146,58 @@ def _emoji_cues(clip: dict, words: list[dict], dur: float) -> list[tuple[float, 
     return sorted(out)
 
 
+def add_overlays(chains: list[str], cur: str, add_input, settings: dict, style_key: str | None, clip: dict,
+                 words: list[dict], out_dur: float, width: int, height: int, fps: int, ass_name: str,
+                 brand: dict) -> tuple[str, list]:
+    """Append progress bar, emojis, captions and logo to the filter graph.
+    Returns the label of the finished video stream and the emoji cues used."""
+    portrait = height >= width
+    step = 0
+
+    def push(expr: str) -> None:
+        nonlocal cur, step
+        step += 1
+        chains.append(expr.replace("{in}", cur) + f"[ov{step}]")
+        cur = f"[ov{step}]"
+
+    accent = brand["color"] or captions.STYLES.get(style_key or "", {}).get("active", "#FFE100")
+    if accent.upper() == "#FFFFFF":
+        accent = "#FFE100"
+    if settings["progress_bar"]:
+        bar_h = max(4, int(height * 0.007) // 2 * 2)
+        chains.append(f"color=c={accent.replace('#', '0x')}:s={width}x{bar_h}:r={fps}[bar]")
+        push(f"{{in}}[bar]overlay=x='-w+w*t/{out_dur:.3f}':y=H-h:shortest=1")
+
+    cues = _emoji_cues(clip, words, out_dur) if settings["emojis"] and style_key else []
+    if cues:
+        size = int(min(width, height * 0.8) * 0.14) // 2 * 2
+        pos = settings["caption_position"]
+        if pos == "center":
+            ey = int(height * 0.40) - size
+        elif pos == "top":
+            ey = int(height * (0.36 if portrait else 0.30))
+        else:
+            ey = int(height * (0.665 if portrait else 0.76)) - size
+        for a, b, png in cues:
+            idx = add_input("-loop", "1", "-i", png)
+            chains.append(f"[{idx}:v]scale={size}:{size}:flags=lanczos,format=rgba[em{idx}]")
+            push(f"{{in}}[em{idx}]overlay=x=(W-w)/2:y={max(0, ey)}:enable='between(t,{a:.3f},{b:.3f})':eof_action=pass")
+
+    push(f"{{in}}ass={ass_name}:fontsdir=fonts")
+
+    logo = settings.get("logo_path") if settings.get("logo_enabled") else None
+    if logo and Path(logo).exists():
+        idx = add_input("-loop", "1", "-i", logo)
+        lw = max(16, int(width * float(settings["logo_scale"])) // 2 * 2)
+        m = int(min(width, height) * 0.04)
+        x = f"{m}" if "left" in settings["logo_position"] else f"W-w-{m}"
+        y = f"{m}" if "top" in settings["logo_position"] else f"H-h-{m * 2}"
+        chains.append(f"[{idx}:v]scale={lw}:-1:flags=lanczos,format=rgba,"
+                      f"colorchannelmixer=aa={float(settings['logo_opacity']):.2f}[logo]")
+        push(f"{{in}}[logo]overlay=x={x}:y={y}:eof_action=pass")
+    return cur, cues
+
+
 def render_clip(src: str, info: dict, clip: dict, all_words: list[dict], settings: dict, job_dir: Path,
                 index: int, style_key: str | None, music: str | None,
                 progress: Callable[[float, str], None], cancelled: Callable[[], bool],
@@ -234,49 +286,9 @@ def render_clip(src: str, info: dict, clip: dict, all_words: list[dict], setting
                  f":d=1:s={width}x{height}:fps={fps}")
     v.append("format=yuv420p")
     chains.append(head + ",".join(v) + "[vx0]")
-    cur, step = "[vx0]", 0
-
-    def push(expr: str) -> None:
-        nonlocal cur, step
-        step += 1
-        chains.append(expr.replace("{in}", cur) + f"[vx{step}]")
-        cur = f"[vx{step}]"
-
-    accent = brand["color"] or captions.STYLES.get(style_key or "", {}).get("active", "#FFE100")
-    if accent.upper() == "#FFFFFF":
-        accent = "#FFE100"
-    if settings["progress_bar"]:
-        bar_h = max(4, int(height * 0.007) // 2 * 2)
-        chains.append(f"color=c={accent.replace('#', '0x')}:s={width}x{bar_h}:r={fps}[bar]")
-        push(f"{{in}}[bar]overlay=x='-w+w*t/{out_dur:.3f}':y=H-h:shortest=1")
-
-    cues = _emoji_cues(clip, words, out_dur) if settings["emojis"] and style_key else []
-    if cues:
-        size = int(min(width, height * 0.8) * 0.14) // 2 * 2
-        pos = settings["caption_position"]
-        if pos == "center":
-            ey = int(height * 0.40) - size
-        elif pos == "top":
-            ey = int(height * (0.36 if portrait else 0.30))
-        else:
-            ey = int(height * (0.665 if portrait else 0.76)) - size
-        for a, b, png in cues:
-            idx = add_input("-loop", "1", "-i", png)
-            chains.append(f"[{idx}:v]scale={size}:{size}:flags=lanczos,format=rgba[em{idx}]")
-            push(f"{{in}}[em{idx}]overlay=x=(W-w)/2:y={max(0, ey)}:enable='between(t,{a:.3f},{b:.3f})':eof_action=pass")
-
-    push(f"{{in}}ass={ass_name}:fontsdir=fonts")
-
-    logo = settings.get("logo_path") if settings.get("logo_enabled") else None
-    if logo and Path(logo).exists():
-        idx = add_input("-loop", "1", "-i", logo)
-        lw = max(16, int(width * float(settings["logo_scale"])) // 2 * 2)
-        m = int(min(width, height) * 0.04)
-        x = f"{m}" if "left" in settings["logo_position"] else f"W-w-{m}"
-        y = f"{m}" if "top" in settings["logo_position"] else f"H-h-{m * 2}"
-        chains.append(f"[{idx}:v]scale={lw}:-1:flags=lanczos,format=rgba,"
-                      f"colorchannelmixer=aa={float(settings['logo_opacity']):.2f}[logo]")
-        push(f"{{in}}[logo]overlay=x={x}:y={y}:eof_action=pass")
+    cur = "[vx0]"
+    cur, cues = add_overlays(chains, cur, add_input, settings, style_key, clip, words, out_dur, width, height,
+                             fps, ass_name, brand)
     chains.append(f"{cur}null[v]")
 
     # ---- audio chain -------------------------------------------------------

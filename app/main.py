@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import config
 from .jobs import DEFAULTS, JobManager, new_id
-from .pipeline import captions, render, transcribe
+from .pipeline import captions, render, story, transcribe, voice
 
 app = FastAPI(title="ClipForge")
 manager = JobManager()
@@ -43,6 +43,10 @@ def get_config():
         "whisper_models": transcribe.MODELS,
         "claude_models": config.CLAUDE_MODELS,
         "fonts": captions.FONTS,
+        "voices": voice.VOICES,
+        "story_themes": story.THEMES,
+        "story_tones": story.TONES,
+        "voice_model": all((voice.model_dir() / f).exists() for f in voice.MODEL_FILES),
         "logo": LOGO.exists(),
         "status": config.system_status(),
     }
@@ -65,8 +69,9 @@ def _save_upload(upload: UploadFile, dest: Path) -> None:
 
 
 @app.post("/api/jobs")
-def create_job(url: str = Form(""), settings: str = Form("{}"), reuse: str = Form(""),
-               video: UploadFile | None = File(None), music: UploadFile | None = File(None)):
+def create_job(url: str = Form(""), settings: str = Form("{}"), reuse: str = Form(""), mode: str = Form("clips"),
+               video: UploadFile | None = File(None), music: UploadFile | None = File(None),
+               footage: list[UploadFile] = File([])):
     try:
         opts = json.loads(settings)
     except ValueError:
@@ -77,8 +82,28 @@ def create_job(url: str = Form(""), settings: str = Form("{}"), reuse: str = For
     source: dict = {}
     url = url.strip()
 
-    if reuse:
-        old = manager.get(reuse)
+    old = manager.get(reuse) if reuse else None
+    if mode == "story" or (old and old.source.get("kind") == "story"):
+        if old:
+            files = [f for f in old.source.get("files", []) if Path(f).exists()]
+            if not files:
+                raise HTTPException(400, "The earlier run's footage is no longer available. Upload the clips again.")
+            source = {"kind": "story", "files": files, "reuse": old.source.get("reuse") or old.id, "title": "Narrated video"}
+            if old.source.get("music") and Path(old.source["music"]).exists():
+                source["music"] = old.source["music"]
+        else:
+            files = []
+            for i, up in enumerate(f for f in footage if f.filename):
+                ext = Path(up.filename).suffix.lower()
+                if ext not in VIDEO_EXT:
+                    raise HTTPException(400, f"Unsupported video type '{ext}' ({up.filename}).")
+                dest = job_dir / f"source_{i + 1:02d}{ext}"
+                _save_upload(up, dest)
+                files.append(str(dest))
+            if not files:
+                raise HTTPException(400, "Choose at least one video clip of your footage.")
+            source = {"kind": "story", "files": files, "title": "Narrated video"}
+    elif reuse:
         root = (old.source.get("reuse") or old.id) if old else ""
         if not root or not (config.JOBS_DIR / root / "source.json").exists():
             raise HTTPException(400, "The earlier run's video is no longer available. Start from the link again.")

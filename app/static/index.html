@@ -8,19 +8,48 @@
 </head>
 <body>
 <header>
-  <div class="brand"><span class="logo">▶</span> ClipForge <small>long video in, viral-ready shorts out</small></div>
+  <div class="brand"><span class="logo">▶</span> ClipForge <small>shorts from YouTube videos or your own footage</small></div>
   <div class="pills" id="pills"></div>
   <button class="ghost" id="btnSettings">AI settings</button>
 </header>
 
 <main>
   <section class="panel" id="controls">
+    <div class="seg big" id="mode"></div>
     <div class="card">
       <h2>1. Source</h2>
-      <input type="url" id="url" placeholder="Paste a YouTube link, e.g. https://www.youtube.com/watch?v=..." autocomplete="off">
-      <div class="row between">
-        <label class="file"><input type="file" id="video" accept="video/*"><span id="videoName">or upload a video file</span></label>
-        <button class="link" id="clearVideo" hidden>remove file</button>
+      <div class="only-clips">
+        <input type="url" id="url" placeholder="Paste a YouTube link, e.g. https://www.youtube.com/watch?v=..." autocomplete="off">
+        <div class="row between">
+          <label class="file"><input type="file" id="video" accept="video/*"><span id="videoName">or upload a video file</span></label>
+          <button class="link" id="clearVideo" hidden>remove file</button>
+        </div>
+      </div>
+      <div class="only-story">
+        <label class="drop"><input type="file" id="footage" accept="video/*" multiple>
+          <b>Choose your video clips</b><span id="footageName">Select several files at once: drone shots, landscapes, b-roll</span></label>
+        <div class="grid2">
+          <div><label>Story theme</label><select id="story_theme"></select></div>
+          <div><label>Tone</label><select id="story_tone"></select></div>
+        </div>
+        <label>Or paste your own text (leave empty to have the story written for you)</label>
+        <textarea id="story_text" rows="3" maxlength="4000" placeholder="Paste a story, a quote of your own, or any narration text"></textarea>
+        <p class="hint" id="storyHint"></p>
+        <div class="grid2">
+          <div><label>Length: <b id="storySecVal"></b></label><input type="range" id="story_seconds" min="20" max="60" step="5"></div>
+          <div><label>Videos to make: <b id="numVideosVal"></b></label><input type="range" id="num_videos" min="1" max="6" step="1"></div>
+        </div>
+        <div class="grid2">
+          <div><label>Narrator voice</label><select id="voice"></select></div>
+          <div><label>Speaking speed: <b id="voiceSpeedVal"></b></label><input type="range" id="voice_speed" min="0.8" max="1.2" step="0.05"></div>
+        </div>
+        <div class="grid2">
+          <div><label>Between shots</label><select id="transition">
+            <option value="crossfade">Crossfade</option><option value="cut">Hard cut</option></select></div>
+          <div><label>Clip order</label><select id="footage_order">
+            <option value="upload">As uploaded</option><option value="best">Sharpest, steadiest first</option></select></div>
+        </div>
+        <label class="check"><input type="checkbox" id="ambient_pad"> Soft ambient sound when no music is uploaded</label>
       </div>
       <button class="primary" id="go">Generate shorts</button>
       <p class="hint" id="formError"></p>
@@ -39,11 +68,13 @@
           <option value="fast">Fast</option><option value="balanced">Balanced</option><option value="high">High (slow)</option></select></div>
       </div>
       <p class="hint" id="sizeHint"></p>
-      <label>Number of clips: <b id="numClipsVal"></b></label>
-      <input type="range" id="num_clips" min="1" max="15" step="1">
-      <div class="grid2">
-        <div><label>Shortest clip (seconds)</label><input type="number" id="min_len" min="5" max="170"></div>
-        <div><label>Longest clip (seconds)</label><input type="number" id="max_len" min="10" max="180"></div>
+      <div class="only-clips">
+        <label>Number of clips: <b id="numClipsVal"></b></label>
+        <input type="range" id="num_clips" min="1" max="15" step="1">
+        <div class="grid2">
+          <div><label>Shortest clip (seconds)</label><input type="number" id="min_len" min="5" max="170"></div>
+          <div><label>Longest clip (seconds)</label><input type="number" id="max_len" min="10" max="180"></div>
+        </div>
       </div>
     </div>
 
@@ -99,19 +130,23 @@
 
     <div class="card">
       <h2>7. Edits</h2>
-      <label class="check"><input type="checkbox" id="remove_silence"> Cut out pauses (jump cuts)</label>
-      <label class="check"><input type="checkbox" id="remove_fillers"> Cut filler words (um, uh, er)</label>
-      <label class="check"><input type="checkbox" id="zooms"> Punch-in zooms on new sentences</label>
+      <div class="only-clips">
+        <label class="check"><input type="checkbox" id="remove_silence"> Cut out pauses (jump cuts)</label>
+        <label class="check"><input type="checkbox" id="remove_fillers"> Cut filler words (um, uh, er)</label>
+        <label class="check"><input type="checkbox" id="zooms"> Punch-in zooms on new sentences</label>
+        <label class="check"><input type="checkbox" id="sfx"> Sound effects (whoosh on zooms, pop on hook and emojis)</label>
+        <label class="check"><input type="checkbox" id="normalize_audio"> Even out loudness</label>
+      </div>
       <label class="check"><input type="checkbox" id="emojis"> Emojis on key words</label>
-      <label class="check"><input type="checkbox" id="sfx"> Sound effects (whoosh on zooms, pop on hook and emojis)</label>
       <label class="check"><input type="checkbox" id="progress_bar"> Progress bar along the bottom</label>
-      <label class="check"><input type="checkbox" id="normalize_audio"> Even out loudness</label>
-      <div class="grid2">
+      <div class="grid2 only-clips">
         <div><label>Cut pauses longer than: <b id="gapVal"></b></label><input type="range" id="silence_gap" min="0.25" max="1.5" step="0.05"></div>
         <div><label>Zoom strength: <b id="zoomVal"></b></label><input type="range" id="zoom_amount" min="1.04" max="1.3" step="0.01"></div>
       </div>
-      <label>Sound effect volume: <b id="sfxVal"></b></label>
-      <input type="range" id="sfx_volume" min="0" max="1.2" step="0.05">
+      <div class="only-clips">
+        <label>Sound effect volume: <b id="sfxVal"></b></label>
+        <input type="range" id="sfx_volume" min="0" max="1.2" step="0.05">
+      </div>
       <label>Background music (optional)</label>
       <div class="row between">
         <label class="file"><input type="file" id="music" accept="audio/*"><span id="musicName">choose an audio file</span></label>
@@ -123,7 +158,7 @@
 
     <div class="card">
       <h2>8. Analysis</h2>
-      <label class="check"><input type="checkbox" id="use_ai"> Let Claude pick the moments and write the hooks</label>
+      <label class="check"><input type="checkbox" id="use_ai"> <span id="useAiLabel">Let Claude pick the moments and write the hooks</span></label>
       <p class="hint" id="aiHint"></p>
       <label>Speech recognition model</label>
       <select id="whisper_model"></select>
@@ -157,8 +192,9 @@
     </div>
 
     <div class="card empty" id="empty">
-      <h2>Your shorts will appear here</h2>
-      <p>Paste a link on the left, pick how you want the clips to look, and press Generate. The app downloads the video, transcribes it, finds the strongest moments, then cuts, reframes and captions each one.</p>
+      <h2>Your videos will appear here</h2>
+      <p class="only-story">Choose your clips on the left, pick a theme or paste your own text, and press Generate. The app picks the best stretches of your footage, records a voiceover, and cuts everything together with captions.</p>
+      <p class="only-clips">Paste a link on the left, pick how you want the clips to look, and press Generate. The app downloads the video, transcribes it, finds the strongest moments, then cuts, reframes and captions each one.</p>
     </div>
 
     <div class="card" id="historyCard" hidden>
