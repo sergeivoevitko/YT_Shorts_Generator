@@ -64,11 +64,14 @@
         <div><label>Resolution</label><select id="resolution">
           <option value="720p">720p</option><option value="1080p">1080p (Full HD)</option>
           <option value="1440p">1440p (2K)</option><option value="4k">4K</option></select></div>
-        <div><label>Frame rate</label><select id="fps"><option value="30">30 fps</option><option value="60">60 fps</option></select></div>
+        <div><label>Frame rate</label><select id="fps"><option value="source">Same as source</option><option value="30">30 fps</option><option value="60">60 fps</option></select></div>
         <div><label>Render quality</label><select id="quality">
           <option value="fast">Fast</option><option value="balanced">Balanced</option><option value="high">High (slow)</option></select></div>
       </div>
       <p class="hint" id="sizeHint"></p>
+      <label>Video encoder</label>
+      <select id="encoder"><option value="auto">Automatic (graphics card when available)</option><option value="cpu">Processor only</option></select>
+      <p class="hint" id="gpuHint"></p>
       <div class="only-clips">
         <label>Number of clips: <b id="numClipsVal"></b></label>
         <input type="range" id="num_clips" min="1" max="15" step="1">

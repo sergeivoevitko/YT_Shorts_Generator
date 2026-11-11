@@ -89,6 +89,10 @@ function refreshHints() {
   $("sizeHint").textContent = `${w} x ${h} pixels. ${ASPECT_NOTE[settings.aspect]}.` +
     (short > 1080 ? " Sizes above 1080p are upscaled unless the source video is that sharp, and render much slower." : "");
   const story = settings.mode === "story";
+  const g = cfg.status.gpu;
+  $("gpuHint").textContent = settings.encoder === "cpu" ? "Rendering uses the processor only."
+    : [g.encoder ? `Rendering uses your ${g.encoder_name} graphics card.` : "No supported graphics card encoder was found, so rendering uses the processor.",
+       g.speech ? "Speech recognition also runs on the graphics card." : ""].join(" ");
   document.body.dataset.mode = settings.mode;
   $("reframeHint").textContent = story
     ? (settings.reframe === "blur" ? REFRAME.blur[1] : "Crops the middle of each clip to fill the frame. Use Fit + blur to keep whole landscape shots visible.")
@@ -114,6 +118,7 @@ function pills() {
     [s.ffmpeg.found ? "FFmpeg ready" : "FFmpeg missing", s.ffmpeg.found ? "ok" : "bad"],
     [s.ffmpeg.libass ? "Captions ready" : "No caption support in FFmpeg", s.ffmpeg.libass ? "ok" : "bad"],
     [s.js_runtime.length ? "YouTube ready" : "YouTube: install Deno", s.js_runtime.length ? "ok" : "warn"],
+    [s.gpu.encoder || s.gpu.speech ? `GPU: ${s.gpu.encoder_name || "NVIDIA"}` : "No GPU found (using CPU)", s.gpu.encoder || s.gpu.speech ? "ok" : ""],
     [s.ai.ready ? `AI: ${s.ai.name}` : "Offline mode (no AI set up)", s.ai.ready ? "ok" : "warn"],
   ];
   $("pills").replaceChildren(...items.map(([text, cls]) => el("span", { className: "pill " + cls, textContent: text })));
@@ -123,6 +128,7 @@ async function init() {
   cfg = await api("/api/config");
   let stored = {};
   try { stored = JSON.parse(localStorage.getItem("clipforge.settings") || "{}"); } catch (e) { /* ignore */ }
+  if ((stored._v || 1) < 2) { delete stored.fps; stored._v = 2; }  // older versions forced 30 fps, which can stutter
   settings = Object.assign({ mode: "clips" }, cfg.defaults, stored);
   pills();
   segmented("mode", MODES, "mode", refreshHints);
@@ -147,7 +153,7 @@ async function init() {
   $("whisper_model").replaceChildren(...Object.entries(cfg.whisper_models).map(([k, v]) => el("option", { value: k, textContent: v })));
   $("model").replaceChildren(...Object.entries(cfg.claude_models).map(([k, v]) => el("option", { value: k, textContent: v })));
 
-  for (const id of ["resolution", "fps", "quality", "caption_position", "hook_style", "whisper_model", "instructions"]) bind(id, id);
+  for (const id of ["encoder", "resolution", "fps", "quality", "caption_position", "hook_style", "whisper_model", "instructions"]) bind(id, id);
   bind("num_clips", "num_clips", "num", "numClipsVal");
   bind("min_len", "min_len", "num"); bind("max_len", "max_len", "num"); bind("hook_seconds", "hook_seconds", "num");
   bind("caption_scale", "caption_scale", "num", "capScaleVal", (v) => Math.round(v * 100) + "%");

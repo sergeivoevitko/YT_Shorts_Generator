@@ -1,0 +1,3 @@
+# Extra libraries that let speech recognition run on an NVIDIA graphics card.
+nvidia-cublas-cu12
+nvidia-cudnn-cu12>=9,<10

@@ -15,7 +15,7 @@ from . import config
 from .pipeline import analyze, captions, download, footage, llm, reframe, render, story, transcribe, voice
 
 DEFAULTS = {
-    "aspect": "9:16", "resolution": "1080p", "fps": 30, "quality": "balanced",
+    "aspect": "9:16", "resolution": "1080p", "fps": "source", "quality": "balanced", "encoder": "auto",
     "num_clips": 5, "min_len": 20, "max_len": 60,
     "reframe": "smart",
     "caption_style": "mix", "caption_position": "lower", "caption_scale": 1.0,
@@ -50,7 +50,8 @@ def clean_settings(raw: dict) -> dict:
     s["aspect"] = s["aspect"] if s["aspect"] in render.ASPECTS else "9:16"
     s["resolution"] = s["resolution"] if s["resolution"] in render.RESOLUTIONS else "1080p"
     s["quality"] = s["quality"] if s["quality"] in render.QUALITY else "balanced"
-    s["fps"] = 60 if str(s["fps"]) == "60" else 30
+    s["encoder"] = "cpu" if s["encoder"] == "cpu" else "auto"
+    s["fps"] = str(s["fps"]) if str(s["fps"]) in ("30", "60") else "source"
     s["num_clips"] = _num(s["num_clips"], 1, 20, 5, int)
     s["min_len"] = _num(s["min_len"], 5, 170, 20)
     s["max_len"] = _num(s["max_len"], s["min_len"] + 5, 180, max(60, s["min_len"] + 5))

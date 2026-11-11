@@ -27,6 +27,13 @@ echo [2/4] Installing Python packages (a few minutes the first time)...
 ".venv\Scripts\python.exe" -m pip install -r requirements.txt
 if errorlevel 1 goto :fail
 
+where nvidia-smi >nul 2>nul
+if not errorlevel 1 (
+  echo NVIDIA graphics card found. Installing GPU libraries for faster speech recognition...
+  ".venv\Scripts\python.exe" -m pip install -r requirements-gpu.txt
+  if errorlevel 1 echo Could not install the GPU libraries. The app will still work on the processor.
+)
+
 echo [3/4] Checking FFmpeg (video engine)...
 where ffmpeg >nul 2>nul
 if errorlevel 1 (

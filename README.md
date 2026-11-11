@@ -94,6 +94,17 @@ your transcripts are sent to that provider; with Ollama or LM Studio nothing lea
 | Even out loudness | Normalizes volume to the level short-form platforms expect |
 | Background music | Mixes in an audio file you provide, at the volume you set |
 
+## Graphics card (GPU)
+
+The app uses your graphics card automatically when it can, and falls back to the processor when it cannot:
+
+- **Rendering**: NVIDIA, Intel Quick Sync and AMD video encoders are tried at start-up and the first one that
+  works is used. Choose "Processor only" under Output to turn this off.
+- **Speech recognition**: runs on NVIDIA cards. `install.bat` installs the needed libraries when it finds one.
+
+The header shows "GPU: ..." when a card is in use, and the Log says which device each step ran on.
+Cropping, captions and other effects still run on the processor, so the speed-up is real but partial.
+
 ## Troubleshooting
 
 - **Something went wrong and you want to see why**: press **Log** in the top right. It shows everything the
@@ -106,8 +117,10 @@ your transcripts are sent to that provider; with Ollama or LM Studio nothing lea
   yourself and use the upload option.
 - **"YouTube: install Deno" in the header**: run `install.bat` again, then reopen `start.bat`.
 - **"No caption support in FFmpeg"**: install the full build with `winget install Gyan.FFmpeg`, then restart.
-- **Slow transcription**: pick a smaller speech model under Analysis. An NVIDIA GPU is used automatically
-  when the CUDA 12 and cuDNN 9 libraries are installed; otherwise the app runs on the CPU.
+- **Slow transcription**: pick a smaller speech model under Analysis. With an NVIDIA card, run `install.bat`
+  again so the GPU libraries are installed.
+- **The window closes or drops to "Press any key" during a run**: update to the latest version. Speech
+  recognition now runs in a separate helper, so a problem there is reported in the Log instead of closing the app.
 - **Port already in use**: set the `CLIPFORGE_PORT` environment variable to another number before starting.
 
 ## Notes

@@ -104,7 +104,11 @@ def render_story(story: dict, words: list[dict], narration: str, narration_dur: 
                  settings: dict, job_dir: Path, index: int, style_key: str | None, music: str | None,
                  progress: Callable[[float, str], None], cancelled: Callable[[], bool],
                  log: Callable[[str], None]) -> dict:
-    fps = int(settings["fps"])
+    # Use the frame rate most of the footage was shot at, so frames are not repeated.
+    by_rate: dict[float, float] = {}
+    for c in clips:
+        by_rate[round(c["fps"], 2)] = by_rate.get(round(c["fps"], 2), 0.0) + c["duration"]
+    fps, fps_s = render.resolve_fps(settings["fps"], max(by_rate, key=by_rate.get))
     width, height = render.output_size(settings["aspect"], settings["resolution"])
     aw, ah = render.ASPECTS[settings["aspect"]]
     total = LEAD_IN + narration_dur + TAIL
@@ -124,11 +128,17 @@ def render_story(story: dict, words: list[dict], narration: str, narration_dur: 
             raise RuntimeError("Cancelled")
         need = (b - a) + (fade if k < len(shots) - 1 else 0.0) + 0.1
         ci = order[k % len(order)]
+        # Slowing a clip down repeats frames and stutters, so prefer one that is long enough.
+        for j in range(len(order)):
+            cand = order[(k + j) % len(order)]
+            if clips[cand]["duration"] - 1.0 >= need:
+                ci = cand
+                break
         clip = clips[ci]
         start, avail = best_window(clip, need, used.setdefault(ci, []))
         used[ci].append((start, start + avail))
         slow = max(1.0, min(need / max(avail, 0.1), 3.0))  # stretch clips that are too short
-        vf = [f"fps={fps}"]
+        vf = [f"fps={fps_s}"]
         if slow > 1.01:
             vf.append(f"setpts={slow:.4f}*PTS")
         if settings["reframe"] == "blur":
@@ -142,10 +152,18 @@ def render_story(story: dict, words: list[dict], narration: str, narration_dur: 
             graph = f"[0:v]{','.join(vf)},crop={cw}:{ch},scale={width}:{height}:flags=lanczos,"
         graph += f"setsar=1,tpad=stop_mode=clone:stop_duration=3,trim=duration={need:.3f},setpts=PTS-STARTPTS,format=yuv420p[v]"
         seg = f"{name}_s{k:02d}.mp4"
-        _run([config.ffmpeg_path(), "-hide_banner", "-loglevel", "error", "-y", "-ss", f"{start:.3f}",
-              "-t", f"{avail + 0.2:.3f}", "-i", clip["path"], "-an", "-filter_complex", graph, "-map", "[v]",
-              "-c:v", "libx264", "-preset", "veryfast", "-crf", "15", "-r", str(fps), seg],
-             job_dir, f"cutting shot {k + 1}")
+
+        def build_seg(codec: list[str], graph=graph, start=start, avail=avail, clip=clip, seg=seg) -> list[str]:
+            return [config.ffmpeg_path(), "-hide_banner", "-loglevel", "error", "-y", "-ss", f"{start:.3f}",
+                    "-t", f"{avail + 0.2:.3f}", "-i", clip["path"], "-an", "-filter_complex", graph, "-map", "[v]",
+                    *codec, "-pix_fmt", "yuv420p", "-r", fps_s, "-progress", "pipe:1", "-nostats", seg]
+
+        try:
+            render.run_encode(build_seg, settings, job_dir, need, lambda p: None, cancelled, log, fast=True)
+        except RuntimeError as exc:
+            if "Cancelled" in str(exc):
+                raise
+            raise RuntimeError(f"Cutting shot {k + 1} failed. {exc}") from exc
         segs.append(seg)
         progress(0.55 * (k + 1) / len(shots), f"Video {index}: cutting shot {k + 1} of {len(shots)}")
 
@@ -184,7 +202,7 @@ def render_story(story: dict, words: list[dict], narration: str, narration_dur: 
         chains.append("".join(f"[{k}:v]" for k in range(len(segs))) + f"concat=n={len(segs)}:v=1:a=0[joined]")
     chains.append(f"[joined]fade=t=in:d=0.5,fade=t=out:st={total - 0.6:.3f}:d=0.6[base]")
     cur, cues = render.add_overlays(chains, "[base]", add_input, settings, style_key, story, timed, total,
-                                    width, height, fps, ass_name, brand)
+                                    width, height, fps_s, ass_name, brand)
     chains.append(f"{cur}null[v]")
 
     vi = add_input("-i", narration)
@@ -208,36 +226,29 @@ def render_story(story: dict, words: list[dict], narration: str, narration_dur: 
     else:
         chains.append(voice + "[a]")
 
-    preset, crf = render.QUALITY.get(settings["quality"], render.QUALITY["balanced"])
     out_name = f"{name}.mp4"
-    cmd = [config.ffmpeg_path(), "-hide_banner", "-loglevel", "error", "-y", *inputs,
-           "-filter_complex", ";".join(chains), "-map", "[v]", "-map", "[a]",
-           "-c:v", "libx264", "-preset", preset, "-crf", str(crf), "-pix_fmt", "yuv420p", "-r", str(fps),
-           "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-t", f"{total:.3f}",
-           "-movflags", "+faststart", "-progress", "pipe:1", "-nostats", out_name]
-    proc = subprocess.Popen(cmd, cwd=str(job_dir), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            text=True, errors="replace")
+
+    def build(codec: list[str]) -> list[str]:
+        return [config.ffmpeg_path(), "-hide_banner", "-loglevel", "error", "-y", *inputs,
+                "-filter_complex", ";".join(chains), "-map", "[v]", "-map", "[a]",
+                *codec, "-pix_fmt", "yuv420p", "-r", fps_s,
+                "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-t", f"{total:.3f}",
+                "-movflags", "+faststart", "-progress", "pipe:1", "-nostats", out_name]
+
     try:
-        for line in proc.stdout:
-            if cancelled():
-                proc.kill()
-                raise RuntimeError("Cancelled")
-            if line.startswith("out_time_ms=") or line.startswith("out_time_us="):
-                try:
-                    done = int(line.split("=", 1)[1]) / 1e6
-                except ValueError:
-                    continue
-                progress(0.55 + 0.44 * min(done / total, 1.0), f"Video {index}: adding voice and captions")
-        err = proc.stderr.read()
-        code = proc.wait()
+        render.run_encode(build, settings, job_dir, total,
+                          lambda p: progress(0.55 + 0.44 * p, f"Video {index}: adding voice and captions"),
+                          cancelled, log)
+    except RuntimeError as exc:
+        if "Cancelled" in str(exc):
+            raise
+        raise RuntimeError(f"Finishing video {index} failed. {exc}") from exc
     finally:
-        if proc.poll() is None:
-            proc.kill()
         for seg in segs:
             (job_dir / seg).unlink(missing_ok=True)
         (job_dir / ass_name).unlink(missing_ok=True)
-    if code != 0 or not (job_dir / out_name).exists():
-        raise RuntimeError(f"ffmpeg failed while finishing video {index}: {err.strip()[-600:]}")
+    if not (job_dir / out_name).exists():
+        raise RuntimeError(f"Finishing video {index} produced no file.")
 
     thumb = f"{name}.jpg"
     subprocess.run([config.ffmpeg_path(), "-hide_banner", "-loglevel", "error", "-y", "-ss", "1.5", "-i", out_name,
@@ -246,7 +257,7 @@ def render_story(story: dict, words: list[dict], narration: str, narration_dur: 
         f"style {style_key or 'no captions'}, {len(cues)} emojis.")
     return {
         "index": index, "kind": "story", "file": out_name, "thumb": thumb, "duration": round(total, 2),
-        "source_start": 0, "source_end": 0, "style": style_key, "width": width, "height": height,
+        "source_start": 0, "source_end": 0, "style": style_key, "width": width, "height": height, "fps": round(fps, 2),
         "title": story["title"], "hook": story.get("hook", ""), "description": story.get("description", ""),
         "hashtags": story.get("hashtags", []), "score": 0, "reason": "", "scores": {},
         "engine": story.get("engine", ""), "transcript": story["script"],

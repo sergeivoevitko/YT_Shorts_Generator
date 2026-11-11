@@ -17,6 +17,9 @@ from . import config
 from .jobs import DEFAULTS, JobManager, new_id
 from .pipeline import captions, llm, render, story, transcribe, voice
 
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")           # two math libraries in one process must not abort it
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")  # harmless Windows notice, hides real messages
+config.enable_cuda_libraries()
 app = FastAPI(title="ClipForge")
 manager = JobManager()
 STATIC = Path(__file__).parent / "static"
@@ -336,6 +339,13 @@ def main() -> None:
 
     import uvicorn
 
+    import faulthandler
+
+    config.ensure_dirs()
+    try:  # if the process is ever killed by a native crash, leave a trace of where
+        faulthandler.enable(file=open(config.WORKSPACE / "crash.log", "a", encoding="utf-8"))
+    except OSError:
+        pass
     host = os.environ.get("CLIPFORGE_HOST", "127.0.0.1")
     port = int(os.environ.get("CLIPFORGE_PORT", "8765"))
     if os.environ.get("CLIPFORGE_NO_BROWSER") != "1":

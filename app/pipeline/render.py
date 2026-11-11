@@ -24,6 +24,83 @@ def output_size(aspect: str, resolution: str) -> tuple[int, int]:
     return int(round(w)) // 2 * 2, int(round(h)) // 2 * 2
 
 
+_gpu_broken = False  # set when a GPU encode fails, so the rest of the session uses the CPU
+
+
+def encoder_args(settings: dict, fast: bool = False) -> tuple[list[str], bool]:
+    """ffmpeg video encoder options and whether they use the GPU."""
+    preset, crf = QUALITY.get(settings["quality"], QUALITY["balanced"])
+    if fast:  # intermediate files: near-lossless, speed matters more than size
+        preset, crf = "veryfast", 15
+    codec = "" if settings.get("encoder") == "cpu" or _gpu_broken else config.gpu_status()["encoder"]
+    q = str(crf + 3)
+    if codec == "h264_nvenc":
+        return ["-c:v", codec, "-preset", "p4" if fast else "p6", "-tune", "hq", "-rc", "vbr", "-cq", q, "-b:v", "0"], True
+    if codec == "h264_qsv":
+        return ["-c:v", codec, "-preset", "faster" if fast else "medium", "-global_quality", q], True
+    if codec == "h264_amf":
+        return ["-c:v", codec, "-quality", "speed" if fast else "quality", "-rc", "cqp", "-qp_i", q, "-qp_p", q, "-qp_b", q], True
+    if codec == "h264_videotoolbox":
+        return ["-c:v", codec, "-q:v", str(max(30, 85 - crf * 2))], True
+    return ["-c:v", "libx264", "-preset", preset, "-crf", str(crf)], False
+
+
+def gpu_failed(log: Callable[[str], None] | None = None, why: str = "") -> None:
+    global _gpu_broken
+    _gpu_broken = True
+    msg = f"The graphics card could not encode the video ({why.strip()[-200:]}). Using the processor instead."
+    config.applog("[gpu] " + msg)
+    if log:
+        log(msg)
+
+
+def run_encode(build: Callable[[list[str]], list[str]], settings: dict, cwd: Path, total: float,
+               on_progress: Callable[[float], None], cancelled: Callable[[], bool],
+               log: Callable[[str], None] | None, fast: bool = False) -> None:
+    """Run an ffmpeg encode with progress. If the GPU encoder fails, repeat it on the CPU."""
+    for _ in range(2):
+        args, on_gpu = encoder_args(settings, fast)
+        cmd = build(args)
+        proc = subprocess.Popen(cmd, cwd=str(cwd), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True, errors="replace")
+        try:
+            for line in proc.stdout:
+                if cancelled():
+                    proc.kill()
+                    raise RuntimeError("Cancelled")
+                if line.startswith("out_time_ms=") or line.startswith("out_time_us="):
+                    try:
+                        on_progress(min(int(line.split("=", 1)[1]) / 1e6 / max(total, 0.1), 1.0))
+                    except ValueError:
+                        continue
+            err = proc.stderr.read()
+            code = proc.wait()
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+        if code == 0:
+            return
+        if on_gpu:
+            gpu_failed(log, err)
+            continue
+        raise RuntimeError(f"ffmpeg failed: {err.strip()[-600:]}")
+
+
+def resolve_fps(setting, source_fps: float) -> tuple[float, str]:
+    """Output frame rate as (number, ffmpeg string). "source" keeps the footage's own rate,
+    because converting 24/25/50 fps to 30 repeats frames and looks like stutter."""
+    if str(setting) in ("30", "60"):
+        return float(setting), str(setting)
+    f = float(source_fps or 30.0)
+    for num, den in ((24000, 1001), (30000, 1001), (60000, 1001)):
+        if abs(f - num / den) < 0.02:
+            return num / den, f"{num}/{den}"
+    if f > 62:  # high-speed footage: halve it evenly instead of dropping frames unevenly
+        f = f / round(f / 60)
+    f = float(min(max(round(f), 12), 60))
+    return f, str(int(f))
+
+
 def slugify(text: str, limit: int = 48) -> str:
     slug = re.sub(r"[^A-Za-z0-9]+", "-", text).strip("-").lower()[:limit].strip("-")
     return slug or "clip"
@@ -69,6 +146,24 @@ def _keep_segments(words: list[dict], dur: float, fps: int, max_gap: float) -> l
         a, b = int(round(lo * fps)), int(round(hi * fps))
         if b > a:
             segs.append((a, b))
+    # A kept piece of only a few frames between two cuts flashes on screen, and a cut that
+    # removes only a few frames is a visible jump for no gain. Join such pieces back together.
+    min_keep, min_cut = int(round(0.4 * fps)), int(round(0.18 * fps))
+    changed = True
+    while changed and len(segs) > 1:
+        changed = False
+        for i, (a, b) in enumerate(segs):
+            gap_before = a - segs[i - 1][1] if i else None
+            gap_after = segs[i + 1][0] - b if i + 1 < len(segs) else None
+            short = b - a < min_keep
+            if gap_after is not None and (gap_after < min_cut or (short and (gap_before is None or gap_after <= gap_before))):
+                segs[i:i + 2] = [(a, segs[i + 1][1])]
+                changed = True
+                break
+            if short and gap_before is not None:
+                segs[i - 1:i + 1] = [(segs[i - 1][0], b)]
+                changed = True
+                break
     return segs or [(0, int(dur * fps))]
 
 
@@ -95,14 +190,19 @@ def _remap(words: list[dict], segs: list[tuple[int, int]], fps: int) -> list[dic
     return out
 
 
-def _zoom_windows(words: list[dict], dur: float, hook_seconds: float) -> list[tuple[float, float]]:
-    """Alternate punch-ins on sentence boundaries, a few seconds apart."""
+def _zoom_windows(words: list[dict], dur: float, hook_seconds: float,
+                  cut_times: list[float] | None = None) -> list[tuple[float, float]]:
+    """Alternate punch-ins a few seconds apart. A zoom change is placed exactly on a
+    jump cut where there is one (the two hide each other), otherwise on a sentence start."""
     if not words:
         return []
+    cuts = sorted(cut_times or [])
+    sentence_starts = [words[i + 1]["s"] - 0.05 for i, w in enumerate(words[:-1]) if re.search(r"[.!?]$", w["w"])]
+    candidates = sorted(cuts + [t for t in sentence_starts if all(abs(t - c) > 1.0 for c in cuts)])
     beats = [0.0]
-    for i, w in enumerate(words[:-1]):
-        if re.search(r"[.!?]$", w["w"]) and words[i + 1]["s"] - beats[-1] >= 2.8:
-            beats.append(words[i + 1]["s"])
+    for t in candidates:
+        if t - beats[-1] >= 2.8 and dur - t >= 1.2:
+            beats.append(t)
     beats.append(dur)
     windows = []
     zoomed = False
@@ -147,7 +247,7 @@ def _emoji_cues(clip: dict, words: list[dict], dur: float) -> list[tuple[float, 
 
 
 def add_overlays(chains: list[str], cur: str, add_input, settings: dict, style_key: str | None, clip: dict,
-                 words: list[dict], out_dur: float, width: int, height: int, fps: int, ass_name: str,
+                 words: list[dict], out_dur: float, width: int, height: int, fps: str, ass_name: str,
                  brand: dict) -> tuple[str, list]:
     """Append progress bar, emojis, captions and logo to the filter graph.
     Returns the label of the finished video stream and the emoji cues used."""
@@ -202,7 +302,7 @@ def render_clip(src: str, info: dict, clip: dict, all_words: list[dict], setting
                 index: int, style_key: str | None, music: str | None,
                 progress: Callable[[float, str], None], cancelled: Callable[[], bool],
                 log: Callable[[str], None], version: int = 0) -> dict:
-    fps = int(settings["fps"])
+    fps, fps_s = resolve_fps(settings["fps"], info.get("fps", 30.0))
     width, height = output_size(settings["aspect"], settings["resolution"])
     aw, ah = ASPECTS[settings["aspect"]]
     portrait = height >= width
@@ -225,7 +325,8 @@ def render_clip(src: str, info: dict, clip: dict, all_words: list[dict], setting
     name = f"{index:02d}_{slugify(clip['title'])}" + (f"_v{version}" if version else "")
     progress(0.02, f"Clip {index}: tracking faces")
     plan = reframe.plan_crop(src, start, src_dur, info["width"], info["height"], aw, ah, settings["reframe"],
-                             lambda p: progress(0.02 + p * 0.18, f"Clip {index}: tracking faces"))
+                             lambda p: progress(0.02 + p * 0.18, f"Clip {index}: tracking faces"),
+                             info.get("fps", 30.0), fps)
 
     segs = [(0, int(round(src_dur * fps)))]
     fillers = sum(1 for w in words if w["cut"])
@@ -261,10 +362,10 @@ def render_clip(src: str, info: dict, clip: dict, all_words: list[dict], setting
 
     # ---- video chain -------------------------------------------------------
     chains: list[str] = []
-    v = [f"fps={fps}"]
+    v = [f"fps={fps_s}"]
     if settings["reframe"] == "blur":
         chains.append(
-            f"[0:v]fps={fps},split[bga][fga];"
+            f"[0:v]fps={fps_s},split[bga][fga];"
             f"[bga]scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},"
             f"boxblur=luma_radius={max(8, width // 40)}:luma_power=2,eq=brightness=-0.08[bg];"
             f"[fga]scale={width}:{height}:force_original_aspect_ratio=decrease[fg];"
@@ -272,23 +373,32 @@ def render_clip(src: str, info: dict, clip: dict, all_words: list[dict], setting
         head, v = "[v0]", []
     else:
         head = "[0:v]"
-        v.append(f"crop={plan['cw']}:{plan['ch']}:x='{plan['x_expr']}':y={plan['y']}")
+        if "t" in plan["x_expr"]:
+            # A moving crop on 4:2:0 video can only step two pixels at a time, which looks like
+            # judder. Full-resolution colour lets the window glide one pixel at a time.
+            v += ["format=yuv444p", f"crop={plan['cw']}:{plan['ch']}:x='{plan['x_expr']}':y={plan['y']}:exact=1"]
+        else:
+            v.append(f"crop={plan['cw']}:{plan['ch']}:x='{plan['x_expr']}':y={plan['y']}")
     # Half-frame offsets keep the comparisons away from exact frame timestamps.
     sel = "+".join(f"gte(t,{(a - 0.5) / fps:.5f})*lt(t,{(b - 0.5) / fps:.5f})" for a, b in segs)
     if cut:
-        v += [f"select='{sel}'", f"setpts=N/({fps}*TB)"]
+        v += [f"select='{sel}'", f"setpts=N/({fps_s})/TB"]
     v += [f"scale={width}:{height}:flags=lanczos", "setsar=1"]
-    windows = _zoom_windows(words, out_dur, hook_seconds) if settings["zooms"] else []
+    cut_times, acc = [], 0.0
+    for a_, b_ in segs[:-1]:
+        acc += (b_ - a_) / fps
+        cut_times.append(acc - 0.5 / fps)  # half a frame early so the switch lands on the first frame after the cut
+    windows = _zoom_windows(words, out_dur, hook_seconds, cut_times) if settings["zooms"] else []
     if windows:
         cond = "+".join(f"between(in_time,{a:.3f},{b - 0.001:.3f})" for a, b in windows)
         z = float(settings["zoom_amount"])
         v.append(f"zoompan=z='if({cond},{z:.3f},1)':x='(iw-iw/zoom)/2':y='(ih-ih/zoom)*0.38'"
-                 f":d=1:s={width}x{height}:fps={fps}")
+                 f":d=1:s={width}x{height}:fps={fps_s}")
     v.append("format=yuv420p")
     chains.append(head + ",".join(v) + "[vx0]")
     cur = "[vx0]"
     cur, cues = add_overlays(chains, cur, add_input, settings, style_key, clip, words, out_dur, width, height,
-                             fps, ass_name, brand)
+                             fps_s, ass_name, brand)
     chains.append(f"{cur}null[v]")
 
     # ---- audio chain -------------------------------------------------------
@@ -335,34 +445,24 @@ def render_clip(src: str, info: dict, clip: dict, all_words: list[dict], setting
     else:
         chains.append("[a0]anull[a]")
 
-    preset, crf = QUALITY.get(settings["quality"], QUALITY["balanced"])
     out_name = f"{name}.mp4"
-    cmd = [config.ffmpeg_path(), "-hide_banner", "-loglevel", "error", "-y", *inputs,
-           "-filter_complex", ";".join(chains), "-map", "[v]", "-map", "[a]",
-           "-c:v", "libx264", "-preset", preset, "-crf", str(crf), "-pix_fmt", "yuv420p", "-r", str(fps),
-           "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-t", f"{out_dur:.3f}",
-           "-movflags", "+faststart", "-progress", "pipe:1", "-nostats", out_name]
 
-    proc = subprocess.Popen(cmd, cwd=str(job_dir), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            text=True, errors="replace")
+    def build(codec: list[str]) -> list[str]:
+        return [config.ffmpeg_path(), "-hide_banner", "-loglevel", "error", "-y", *inputs,
+                "-filter_complex", ";".join(chains), "-map", "[v]", "-map", "[a]",
+                *codec, "-pix_fmt", "yuv420p", "-r", fps_s,
+                "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-t", f"{out_dur:.3f}",
+                "-movflags", "+faststart", "-progress", "pipe:1", "-nostats", out_name]
+
     try:
-        for line in proc.stdout:
-            if cancelled():
-                proc.kill()
-                raise RuntimeError("Cancelled")
-            if line.startswith("out_time_ms=") or line.startswith("out_time_us="):
-                try:
-                    done = int(line.split("=", 1)[1]) / 1e6
-                except ValueError:
-                    continue
-                progress(0.2 + 0.78 * min(done / max(out_dur, 0.1), 1.0), f"Clip {index}: rendering")
-        err = proc.stderr.read()
-        code = proc.wait()
-    finally:
-        if proc.poll() is None:
-            proc.kill()
-    if code != 0 or not (job_dir / out_name).exists():
-        raise RuntimeError(f"ffmpeg failed while rendering clip {index}: {err.strip()[-600:]}")
+        run_encode(build, settings, job_dir, out_dur,
+                   lambda p: progress(0.2 + 0.78 * p, f"Clip {index}: rendering"), cancelled, log)
+    except RuntimeError as exc:
+        if "Cancelled" in str(exc):
+            raise
+        raise RuntimeError(f"Rendering clip {index} failed. {exc}") from exc
+    if not (job_dir / out_name).exists():
+        raise RuntimeError(f"Rendering clip {index} produced no file.")
 
     thumb = f"{name}.jpg"
     subprocess.run([config.ffmpeg_path(), "-hide_banner", "-loglevel", "error", "-y", "-ss",
@@ -374,7 +474,7 @@ def render_clip(src: str, info: dict, clip: dict, all_words: list[dict], setting
     return {
         "index": index, "file": out_name, "thumb": thumb, "duration": round(out_dur, 2),
         "source_start": round(start, 2), "source_end": round(end, 2), "style": style_key,
-        "width": width, "height": height, "w0": w0, "w1": w1, "version": version,
+        "width": width, "height": height, "fps": round(fps, 2), "w0": w0, "w1": w1, "version": version,
         "title": clip["title"], "hook": clip.get("hook", ""), "description": clip.get("description", ""),
         "hashtags": clip.get("hashtags", []), "score": clip.get("score", 0), "reason": clip.get("reason", ""),
         "scores": clip.get("scores") or {},

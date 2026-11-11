@@ -104,6 +104,64 @@ def ffmpeg_capabilities() -> dict:
     return caps
 
 
+GPU_ENCODERS = [("h264_nvenc", "NVIDIA"), ("h264_qsv", "Intel Quick Sync"), ("h264_amf", "AMD"),
+                ("h264_videotoolbox", "Apple")]
+
+
+def enable_cuda_libraries() -> None:
+    """Make the NVIDIA libraries installed by pip (cuBLAS, cuDNN) findable, so speech
+    recognition can run on the graphics card without a separate CUDA install."""
+    import site
+    import sys
+
+    roots = []
+    for base in site.getsitepackages() + [site.getusersitepackages()]:
+        nvidia = Path(base) / "nvidia"
+        if nvidia.is_dir():
+            roots += [p for p in nvidia.glob("*/bin") if p.is_dir()] + [p for p in nvidia.glob("*/lib") if p.is_dir()]
+    for path in roots:
+        try:
+            if sys.platform.startswith("win"):
+                os.add_dll_directory(str(path))
+                os.environ["PATH"] = str(path) + os.pathsep + os.environ.get("PATH", "")
+            elif sys.platform.startswith("linux"):
+                import ctypes
+
+                for lib in sorted(path.glob("lib*.so*")):
+                    try:
+                        ctypes.CDLL(str(lib), mode=ctypes.RTLD_GLOBAL)
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+
+
+@lru_cache(maxsize=1)
+def gpu_status() -> dict:
+    """Which GPU features work on this machine, found by trying them once."""
+    status = {"encoder": "", "encoder_name": "", "speech": False}
+    exe = ffmpeg_path()
+    if exe:
+        for codec, name in GPU_ENCODERS:
+            try:
+                proc = subprocess.run(
+                    [exe, "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=black:s=640x360:r=30",
+                     "-frames:v", "10", "-c:v", codec, "-f", "null", "-"], capture_output=True, timeout=30)
+            except Exception:
+                continue
+            if proc.returncode == 0:
+                status["encoder"], status["encoder_name"] = codec, name
+                break
+    try:
+        import ctranslate2
+
+        status["speech"] = ctranslate2.get_cuda_device_count() > 0
+    except Exception:
+        pass
+    applog(f"[gpu] video encoder: {status['encoder'] or 'none (CPU)'}, speech recognition on GPU: {status['speech']}")
+    return status
+
+
 def js_runtimes() -> dict:
     """JavaScript runtimes yt-dlp can use to solve YouTube's player challenges."""
     runtimes = {}
@@ -129,6 +187,7 @@ def system_status() -> dict:
         "js_runtime": sorted(js_runtimes().keys()),
         "api_key_set": bool(get_api_key()),
         "ai": _ai_status(),
+        "gpu": gpu_status(),
         "model": get_model(),
         "face_model": (MODELS_DIR / "yunet.onnx").exists(),
     }
