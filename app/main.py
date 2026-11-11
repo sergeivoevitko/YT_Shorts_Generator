@@ -22,6 +22,7 @@ manager = JobManager()
 STATIC = Path(__file__).parent / "static"
 VIDEO_EXT = {".mp4", ".mov", ".mkv", ".webm", ".m4v", ".avi"}
 AUDIO_EXT = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac"}
+LOGO = config.WORKSPACE / "brand" / "logo.png"
 
 
 @app.get("/")
@@ -41,6 +42,8 @@ def get_config():
         "hook_styles": {k: v["name"] for k, v in captions.HOOK_STYLES.items()},
         "whisper_models": transcribe.MODELS,
         "claude_models": config.CLAUDE_MODELS,
+        "fonts": captions.FONTS,
+        "logo": LOGO.exists(),
         "status": config.system_status(),
     }
 
@@ -146,6 +149,54 @@ def open_folder(job_id: str):
     except Exception as exc:
         return JSONResponse({"ok": False, "path": str(job.dir), "error": str(exc)})
     return {"ok": True, "path": str(job.dir)}
+
+
+@app.get("/api/jobs/{job_id}/clips/{index}/words")
+def clip_words(job_id: str, index: int):
+    job = manager.get(job_id)
+    if not job or not 1 <= index <= len(job.clips):
+        raise HTTPException(404, "Clip not found")
+    try:
+        return manager.clip_words(job, index)
+    except (OSError, ValueError, KeyError, IndexError):
+        raise HTTPException(410, "The transcript for this run is no longer available.")
+
+
+@app.post("/api/jobs/{job_id}/clips/{index}/rerender")
+def rerender_clip(job_id: str, index: int, edit: dict):
+    if not manager.rerender_clip(job_id, index, edit):
+        raise HTTPException(409, "This run is busy or the clip does not exist.")
+    return manager.get(job_id).to_dict()
+
+
+@app.post("/api/brand/logo")
+def upload_logo(logo: UploadFile = File(...)):
+    """Store the brand logo as PNG (ffmpeg converts whatever image was uploaded)."""
+    ext = Path(logo.filename or "").suffix.lower()
+    if ext not in (".png", ".jpg", ".jpeg", ".webp"):
+        raise HTTPException(400, "Use a PNG, JPG or WebP image. PNG with a transparent background works best.")
+    LOGO.parent.mkdir(parents=True, exist_ok=True)
+    tmp = LOGO.with_name("upload" + ext)
+    _save_upload(logo, tmp)
+    proc = subprocess.run([config.ffmpeg_path(), "-hide_banner", "-loglevel", "error", "-y", "-i", str(tmp),
+                           "-frames:v", "1", "-vf", "scale='min(1024,iw)':-1", str(LOGO)], capture_output=True)
+    tmp.unlink(missing_ok=True)
+    if proc.returncode != 0 or not LOGO.exists():
+        raise HTTPException(400, "That image could not be read.")
+    return {"ok": True}
+
+
+@app.delete("/api/brand/logo")
+def delete_logo():
+    LOGO.unlink(missing_ok=True)
+    return {"ok": True}
+
+
+@app.get("/api/brand/logo")
+def get_logo():
+    if not LOGO.exists():
+        raise HTTPException(404, "No logo")
+    return FileResponse(LOGO, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/media/{job_id}/{name}")

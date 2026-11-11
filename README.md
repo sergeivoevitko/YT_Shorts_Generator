@@ -28,6 +28,10 @@ macOS and Linux: run `./install.sh`, then `./start.sh` (install FFmpeg and Deno 
 4. Press **Generate shorts**. Each finished clip shows a score, a title, a post caption with hashtags, and
    a download button.
 
+**Edit** on any clip opens the clip editor: change the hook, title and caption, move the start or end of
+the clip by clicking a word, fix a misheard word, or hide a word from the captions. Only that clip is
+rendered again.
+
 **Re-run with current settings** renders the same video again with new options, without downloading or
 transcribing a second time. Useful for trying another caption style or aspect ratio.
 
@@ -53,6 +57,10 @@ Cost is typically a few cents per video and depends on video length and the mode
 | Cut out pauses | Removes silences longer than the threshold, which tightens the pacing |
 | Punch-in zooms | Alternates a slight zoom on new sentences to keep the picture moving |
 | Hook | Short text at the top for the first seconds, written to stop the scroll |
+| Cut filler words | Removes "um", "uh", "er" from both the audio and the captions |
+| Emojis on key words | Pops an emoji above the captions when a matching word is spoken |
+| Sound effects | Whoosh on zooms, pop on the hook and emojis |
+| Brand | Your logo in a corner, your highlight color and font, your handle at the bottom |
 | Progress bar | Thin bar along the bottom that shows how much of the clip is left |
 | Even out loudness | Normalizes volume to the level short-form platforms expect |
 | Background music | Mixes in an audio file you provide, at the volume you set |
@@ -72,4 +80,5 @@ Cost is typically a few cents per video and depends on video length and the mode
 - Only English speech is supported.
 - Use it on videos you own or have permission to reuse.
 - The score is an estimate of short-form potential, not a prediction of views.
+  With Claude, each clip also shows separate hook, flow, value and trend scores.
 - Bundled fonts and the face detection model are open source; see `assets/THIRD_PARTY.md`.

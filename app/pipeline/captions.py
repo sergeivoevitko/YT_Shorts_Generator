@@ -43,6 +43,7 @@ STYLES: dict[str, dict] = {
         "outline_color": "#FF00C8", "outline": 0.035, "shadow": 0.0, "anim": "pop", "blur": 0.03,
     },
 }
+FONTS = ["Poppins ExtraBold", "Poppins SemiBold", "Anton", "Bangers", "Bebas Neue"]
 MIX_ORDER = ["bold_pop", "beast", "karaoke", "neon", "one_word", "minimal"]
 
 HOOK_STYLES = {
@@ -98,7 +99,7 @@ def group_words(words: list[dict], max_words: int, max_chars: int, gap: float = 
 
 def build_ass(words: list[dict], duration: float, width: int, height: int, style_key: str | None,
               emphasis: list[str], hook_text: str, hook_style: str | None, hook_seconds: float,
-              position: str = "lower", scale: float = 1.0) -> str:
+              position: str = "lower", scale: float = 1.0, brand: dict | None = None) -> str:
     """words: [{"w", "s", "e"}] with times relative to the start of the rendered clip."""
     portrait = height >= width
     ref = min(width, height * 0.8)
@@ -113,7 +114,16 @@ def build_ass(words: list[dict], duration: float, width: int, height: int, style
     events: list[str] = []
     margin_lr = int(width * 0.07)
 
+    brand = brand or {}
     st = STYLES.get(style_key or "")
+    if st:
+        st = dict(st)
+        if brand.get("color"):
+            st["active"] = brand["color"]
+            if st["words"] == 1:
+                st["emphasis"] = brand["color"]
+        if brand.get("font") in FONTS:
+            st["font"] = brand["font"]
     if st and words:
         size = ref * st["size"] * scale * 1.22
         if position == "center":
@@ -195,6 +205,15 @@ def build_ass(words: list[dict], duration: float, width: int, height: int, style
         end = min(hook_seconds, duration)
         anim = "{\\fad(120,220)\\fscx88\\fscy88\\t(0,140,\\fscx100\\fscy100)}"
         events.append(f"Dialogue: 2,{_ts(0)},{_ts(end)},Hook,,0,0,0,,{anim}{wrapped}")
+
+    handle = str(brand.get("handle") or "").replace("\\", "").replace("{", "").replace("}", "").strip()[:40]
+    if handle:
+        size = ref * 0.04
+        lines.append(
+            f"Style: Handle,Poppins SemiBold,{size:.0f},{_ass_color('#FFFFFF', 0x40)},{_ass_color('#FFFFFF', 0x40)},"
+            f"{_ass_color('#000000', 0x70)},{_ass_color('#000000', 0x90)},0,0,0,0,100,100,0,0,1,{size * 0.06:.1f},0,2,"
+            f"{margin_lr},{margin_lr},{int(height * 0.035)},1")
+        events.append(f"Dialogue: 0,{_ts(0)},{_ts(duration)},Handle,,0,0,0,,{handle}")
 
     lines += ["", "[Events]",
               "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text"]

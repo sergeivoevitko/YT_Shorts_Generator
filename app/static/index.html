@@ -73,15 +73,45 @@
     </div>
 
     <div class="card">
-      <h2>6. Edits</h2>
+      <h2>6. Brand</h2>
+      <div class="row between">
+        <label class="file"><input type="file" id="logo" accept="image/png,image/jpeg,image/webp"><span id="logoName">upload a logo or watermark</span></label>
+        <button class="link" id="clearLogo" hidden>remove</button>
+      </div>
+      <img id="logoPreview" alt="Logo preview" hidden>
+      <label class="check"><input type="checkbox" id="logo_enabled"> Show the logo on every clip</label>
+      <div class="grid3">
+        <div><label>Corner</label><select id="logo_position">
+          <option value="top-right">Top right</option><option value="top-left">Top left</option>
+          <option value="bottom-right">Bottom right</option><option value="bottom-left">Bottom left</option></select></div>
+        <div><label>Size: <b id="logoScaleVal"></b></label><input type="range" id="logo_scale" min="0.06" max="0.4" step="0.01"></div>
+        <div><label>Opacity: <b id="logoOpVal"></b></label><input type="range" id="logo_opacity" min="0.2" max="1" step="0.05"></div>
+      </div>
+      <div class="grid2">
+        <div><label class="check"><input type="checkbox" id="brandColorOn"> My highlight color</label>
+          <input type="color" id="brandColorPick" value="#ffe100"></div>
+        <div><label>Caption font</label><select id="brand_font"></select></div>
+      </div>
+      <label>Handle shown at the bottom (optional)</label>
+      <input type="text" id="handle_text" maxlength="40" placeholder="@yourname">
+      <p class="hint">These choices are remembered, so every video you make carries the same look.</p>
+    </div>
+
+    <div class="card">
+      <h2>7. Edits</h2>
       <label class="check"><input type="checkbox" id="remove_silence"> Cut out pauses (jump cuts)</label>
+      <label class="check"><input type="checkbox" id="remove_fillers"> Cut filler words (um, uh, er)</label>
       <label class="check"><input type="checkbox" id="zooms"> Punch-in zooms on new sentences</label>
+      <label class="check"><input type="checkbox" id="emojis"> Emojis on key words</label>
+      <label class="check"><input type="checkbox" id="sfx"> Sound effects (whoosh on zooms, pop on hook and emojis)</label>
       <label class="check"><input type="checkbox" id="progress_bar"> Progress bar along the bottom</label>
       <label class="check"><input type="checkbox" id="normalize_audio"> Even out loudness</label>
       <div class="grid2">
         <div><label>Cut pauses longer than: <b id="gapVal"></b></label><input type="range" id="silence_gap" min="0.25" max="1.5" step="0.05"></div>
         <div><label>Zoom strength: <b id="zoomVal"></b></label><input type="range" id="zoom_amount" min="1.04" max="1.3" step="0.01"></div>
       </div>
+      <label>Sound effect volume: <b id="sfxVal"></b></label>
+      <input type="range" id="sfx_volume" min="0" max="1.2" step="0.05">
       <label>Background music (optional)</label>
       <div class="row between">
         <label class="file"><input type="file" id="music" accept="audio/*"><span id="musicName">choose an audio file</span></label>
@@ -92,7 +122,7 @@
     </div>
 
     <div class="card">
-      <h2>7. Analysis</h2>
+      <h2>8. Analysis</h2>
       <label class="check"><input type="checkbox" id="use_ai"> Let Claude pick the moments and write the hooks</label>
       <p class="hint" id="aiHint"></p>
       <label>Speech recognition model</label>
@@ -152,6 +182,30 @@
       <button class="primary small" id="saveSettings" value="save">Save</button>
     </div>
   </form>
+</dialog>
+
+<dialog id="editDlg" class="wide">
+  <h2>Edit clip</h2>
+  <div class="grid2">
+    <div><label>Hook text (first seconds)</label><input type="text" id="edHook" maxlength="120"></div>
+    <div><label>Title</label><input type="text" id="edTitle" maxlength="120"></div>
+  </div>
+  <label>Post caption</label>
+  <textarea id="edDesc" rows="2" maxlength="300"></textarea>
+  <label>Words. Click a word, then choose what to do with it. Greyed words are outside the clip.</label>
+  <div class="row wrap tools">
+    <button type="button" id="edStart">Start clip here</button>
+    <button type="button" id="edEnd">End clip here</button>
+    <button type="button" id="edFix">Fix spelling</button>
+    <button type="button" id="edHide">Hide from captions</button>
+    <span class="hint" id="edInfo"></span>
+  </div>
+  <div id="edWords" class="words"></div>
+  <p class="error" id="edErr"></p>
+  <div class="row end">
+    <button type="button" class="ghost" id="edCancel">Cancel</button>
+    <button type="button" class="primary small" id="edSave">Re-render this clip</button>
+  </div>
 </dialog>
 
 <script src="/static/app.js"></script>

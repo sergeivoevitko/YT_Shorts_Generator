@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import queue
+import re
 import shutil
 import threading
 import time
@@ -22,6 +23,9 @@ DEFAULTS = {
     "remove_silence": True, "silence_gap": 0.5,
     "zooms": True, "zoom_amount": 1.12,
     "progress_bar": True, "normalize_audio": True, "music_volume": 0.12,
+    "remove_fillers": True, "sfx": True, "sfx_volume": 0.5, "emojis": True,
+    "logo_enabled": False, "logo_position": "top-right", "logo_scale": 0.16, "logo_opacity": 0.9,
+    "brand_color": "", "brand_font": "", "handle_text": "",
     "whisper_model": "small.en", "use_ai": True, "instructions": "",
 }
 
@@ -56,7 +60,16 @@ def clean_settings(raw: dict) -> dict:
     s["zoom_amount"] = _num(s["zoom_amount"], 1.03, 1.4, 1.12)
     s["music_volume"] = _num(s["music_volume"], 0.0, 1.0, 0.12)
     s["whisper_model"] = s["whisper_model"] if s["whisper_model"] in transcribe.MODELS else "small.en"
-    for key in ("remove_silence", "zooms", "progress_bar", "normalize_audio", "use_ai"):
+    s["sfx_volume"] = _num(s["sfx_volume"], 0.0, 1.5, 0.5)
+    s["logo_scale"] = _num(s["logo_scale"], 0.05, 0.5, 0.16)
+    s["logo_opacity"] = _num(s["logo_opacity"], 0.1, 1.0, 0.9)
+    if s["logo_position"] not in ("top-left", "top-right", "bottom-left", "bottom-right"):
+        s["logo_position"] = "top-right"
+    s["brand_color"] = s["brand_color"] if re.fullmatch(r"#[0-9A-Fa-f]{6}", str(s["brand_color"])) else ""
+    s["brand_font"] = s["brand_font"] if s["brand_font"] in captions.FONTS else ""
+    s["handle_text"] = str(s["handle_text"])[:40]
+    for key in ("remove_silence", "zooms", "progress_bar", "normalize_audio", "use_ai", "remove_fillers", "sfx",
+                "emojis", "logo_enabled"):
         s[key] = bool(s[key])
     s["instructions"] = str(s["instructions"])[:2000]
     return s
@@ -104,7 +117,7 @@ class Job:
 class JobManager:
     def __init__(self) -> None:
         self.jobs: dict[str, Job] = {}
-        self.queue: queue.Queue[str] = queue.Queue()
+        self.queue: queue.Queue[tuple] = queue.Queue()
         self.lock = threading.Lock()
         config.ensure_dirs()
         self._load_history()
@@ -131,8 +144,19 @@ class JobManager:
         with self.lock:
             self.jobs[job.id] = job
         job.save()
-        self.queue.put(job.id)
+        self.queue.put((job.id, None))
         return job
+
+    def rerender_clip(self, job_id: str, index: int, edit: dict) -> bool:
+        """Queue one clip of a finished job to be rendered again with edits."""
+        job = self.jobs.get(job_id)
+        if not job or job.status in ("queued", "running") or not 1 <= index <= len(job.clips):
+            return False
+        job.status, job.stage, job.progress, job.error = "queued", "render", 0.0, ""
+        job.message = f"Waiting to re-render clip {index}"
+        job.cancel_flag = False
+        self.queue.put((job.id, {"index": index, "edit": edit}))
+        return True
 
     def get(self, job_id: str) -> Job | None:
         return self.jobs.get(job_id)
@@ -168,16 +192,25 @@ class JobManager:
     # ------------------------------------------------------------------
     def _worker(self) -> None:
         while True:
-            job = self.jobs.get(self.queue.get())
+            job_id, task = self.queue.get()
+            job = self.jobs.get(job_id)
             if not job or job.status != "queued":
                 continue
             job.status = "running"
             try:
-                self._run(job)
+                if task:
+                    self._run_clip(job, task["index"], task["edit"])
+                else:
+                    self._run(job)
                 job.status, job.stage, job.progress = "done", "done", 1.0
                 job.message = f"Done: {len(job.clips)} clips ready"
             except Exception as exc:
-                if job.cancel_flag:
+                if task and job.clips:
+                    # The other clips are still fine: report the problem but keep the results.
+                    job.status, job.stage, job.progress = "done", "done", 1.0
+                    job.message = "Cancelled" if job.cancel_flag else f"Re-render failed: {exc}"
+                    job.log.append(f"Re-render of clip {task['index']} failed: {exc}")
+                elif job.cancel_flag:
                     job.status, job.message = "cancelled", "Cancelled"
                 else:
                     job.status, job.error = "error", str(exc)
@@ -185,6 +218,74 @@ class JobManager:
                     job.log.append(traceback.format_exc(limit=4))
             job.finished = time.time()
             job.save()
+
+    def _source_dir(self, job: Job) -> Path:
+        return config.JOBS_DIR / job.source["reuse"] if job.source.get("reuse") else job.dir
+
+    def clip_words(self, job: Job, index: int, pad: int = 40) -> dict:
+        """Words of one clip plus some context, for the editor."""
+        plans = json.loads((job.dir / "plan.json").read_text(encoding="utf-8"))
+        plan = plans[index - 1]
+        tpath = self._source_dir(job) / f"transcript.{job.settings['whisper_model']}.json"
+        words = json.loads(tpath.read_text(encoding="utf-8"))["words"]
+        lo, hi = max(0, plan["w0"] - pad), min(len(words) - 1, plan["w1"] + pad)
+        edits = plan.get("word_edits") or {}
+        return {
+            "w0": plan["w0"], "w1": plan["w1"], "hook": plan.get("hook", ""), "title": plan.get("title", ""),
+            "description": plan.get("description", ""),
+            "words": [{"i": i, "w": edits.get(str(i), words[i]["w"]), "orig": words[i]["w"],
+                       "s": words[i]["s"], "e": words[i]["e"]} for i in range(lo, hi + 1)],
+        }
+
+    def _run_clip(self, job: Job, index: int, edit: dict) -> None:
+        s = job.settings
+        src_dir = self._source_dir(job)
+        meta = json.loads((src_dir / "source.json").read_text(encoding="utf-8"))
+        words = json.loads((src_dir / f"transcript.{s['whisper_model']}.json").read_text(encoding="utf-8"))["words"]
+        plans = json.loads((job.dir / "plan.json").read_text(encoding="utf-8"))
+        plan = plans[index - 1]
+
+        last = len(words) - 1
+        w0 = max(0, min(int(edit.get("w0", plan["w0"])), last))
+        w1 = max(w0, min(int(edit.get("w1", plan["w1"])), last))
+        if words[w1]["e"] - words[w0]["s"] > 200:
+            raise RuntimeError("The clip would be longer than 200 seconds.")
+        plan["w0"], plan["w1"] = w0, w1
+        for key in ("hook", "title", "description"):
+            if key in edit:
+                plan[key] = str(edit[key])[:300]
+        merged = dict(plan.get("word_edits") or {})
+        for k, v in (edit.get("word_edits") or {}).items():
+            if str(k).isdigit():
+                merged[str(k)] = str(v)[:60]
+        plan["word_edits"] = {k: v for k, v in merged.items() if v != words[int(k)]["w"]}
+        (job.dir / "plan.json").write_text(json.dumps(plans, indent=2), encoding="utf-8")
+
+        old = job.clips[index - 1]
+        version = int(old.get("version", 0)) + 1
+        fonts = job.dir / "fonts"
+        if not fonts.exists():
+            shutil.copytree(config.FONTS_DIR, fonts)
+        job.stage = "render"
+
+        def update(p: float, msg: str) -> None:
+            if job.cancel_flag:
+                raise RuntimeError("Cancelled")
+            job.progress, job.message = max(0.0, min(p, 1.0)), msg
+
+        def log(msg: str) -> None:
+            job.log.append(f"[{time.strftime('%H:%M:%S')}] {msg}")
+
+        try:
+            result = render.render_clip(meta["path"], meta, plan, words, s, job.dir, index, old.get("style"),
+                                        job.source.get("music"), update, lambda: job.cancel_flag, log, version)
+        finally:
+            shutil.rmtree(fonts, ignore_errors=True)
+        for key in ("file", "thumb"):
+            if old.get(key) and old[key] != result[key]:
+                (job.dir / old[key]).unlink(missing_ok=True)
+        job.clips[index - 1] = result
+        _write_post_text(job)
 
     def _run(self, job: Job) -> None:
         s = job.settings
@@ -267,6 +368,11 @@ class JobManager:
             shutil.copytree(config.FONTS_DIR, fonts)
         music = job.source.get("music")
         job.clips = []
+        if s.get("logo_enabled") and not s.get("logo_path"):
+            logo = config.WORKSPACE / "brand" / "logo.png"
+            if logo.exists():  # keep a copy so later re-renders use the same logo
+                shutil.copy(logo, job.dir / "logo.png")
+                s["logo_path"] = str(job.dir / "logo.png")
         for i, plan in enumerate(plans, start=1):
             if s["caption_style"] == "none":
                 style = None

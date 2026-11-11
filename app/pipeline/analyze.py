@@ -35,13 +35,24 @@ the clip answers. It must be different from the spoken first sentence and must n
 - hashtags: 3 to 6 relevant hashtags without the # sign.
 - emphasis_words: 4 to 10 single words spoken in the clip that carry the meaning (numbers, strong \
 nouns and verbs) to highlight in the captions. Copy them exactly as spoken.
-- score: 0 to 100, your honest estimate of the clip's short-form potential relative to typical \
-content in its niche.
+- emojis: 2 to 5 cues, each a single spoken word from the clip (copied exactly) and one emoji that \
+illustrates it. Spread them across the clip and only use them where they add something.
+- hook_score, flow_score, value_score, trend_score: 0 to 100 each. Hook: how hard the first three \
+seconds stop the scroll. Flow: how cleanly the clip runs from setup to payoff without dead spots. \
+Value: how much the viewer gains (insight, laugh, emotion). Trend: how well the topic fits what \
+short-form audiences currently engage with.
+- score: 0 to 100, your honest overall estimate of the clip's short-form potential relative to \
+typical content in its niche. Be critical: most clips should land between 50 and 85.
 - reason: one sentence on why this moment works.
 
 Rules: clips must not overlap, each must respect the duration limits given, and they should cover \
 different ideas. Return them best first. If the video has fewer good moments than requested, return \
 fewer clips rather than padding with weak ones."""
+
+
+class EmojiCue(BaseModel):
+    word: str
+    emoji: str
 
 
 class ClipPlan(BaseModel):
@@ -52,6 +63,11 @@ class ClipPlan(BaseModel):
     description: str
     hashtags: List[str]
     emphasis_words: List[str]
+    emojis: List[EmojiCue]
+    hook_score: int
+    flow_score: int
+    value_score: int
+    trend_score: int
     score: int
     reason: str
 
@@ -128,6 +144,19 @@ _STOP = set("the a an and or but of to in on at for with is are was were be been
             "why which because like get got go going gonna know think thing things one out up all some".split())
 
 
+def _sub_scores(sents: list[dict]) -> dict:
+    first_words = re.findall(r"[a-z0-9']+", sents[0]["text"].lower())
+    text = " ".join(s["text"] for s in sents).lower()
+    words = re.findall(r"[a-z0-9']+", text)
+    dur = max(sents[-1]["e"] - sents[0]["s"], 1.0)
+    hook = 45 + 9 * len(_HOOK_WORDS.intersection(first_words)) + (12 if "?" in sents[0]["text"] else 0) \
+        + (8 if re.search(r"\d", sents[0]["text"]) else 0) - (20 if first_words and first_words[0] in _FILLER_START else 0)
+    flow = 55 + (len(words) / dur - 2.2) * 14 + (10 if sents[-1]["text"].rstrip().endswith((".", "!", "?")) else -10)
+    value = 45 + min(len(_HOOK_WORDS.intersection(words)), 6) * 5 + min(len(set(words) - _STOP) / max(len(words), 1) * 40, 25)
+    clamp = lambda x: int(max(5, min(95, x)))
+    return {"hook": clamp(hook), "flow": clamp(flow), "value": clamp(value)}
+
+
 def _score_window(sents: list[dict]) -> float:
     first = sents[0]["text"].lower()
     first_words = re.findall(r"[a-z0-9']+", first)
@@ -199,6 +228,7 @@ def analyze_heuristic(sentences: list[dict], n: int, min_len: float, max_len: fl
             "hashtags": kws[:4] + ["shorts"],
             "emphasis_words": kws,
             "score": int(score),
+            "scores": _sub_scores(sentences[i:j + 1]),
             "reason": "Picked by offline scoring (strong opening words, dense speech, clean ending).",
         })
     return clips
@@ -223,6 +253,9 @@ def _fit(clip: dict, sentences: list[dict], min_len: float, max_len: float) -> d
     clip["hashtags"] = [re.sub(r"[^A-Za-z0-9_]", "", h) for h in clip.get("hashtags", []) if h][:8]
     clip["hook"] = " ".join(str(clip.get("hook", "")).split()[:12])
     clip["score"] = max(0, min(int(clip.get("score", 50)), 100))
+    if "hook_score" in clip:
+        clip["scores"] = {k: max(0, min(int(clip.pop(f"{k}_score", 0)), 100)) for k in ("hook", "flow", "value", "trend")}
+    clip["emojis"] = [e for e in clip.get("emojis") or [] if e.get("word") and e.get("emoji")][:6]
     return clip
 
 

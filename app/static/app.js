@@ -127,7 +127,15 @@ async function init() {
   bind("silence_gap", "silence_gap", "num", "gapVal", (v) => Number(v).toFixed(2) + " s");
   bind("zoom_amount", "zoom_amount", "num", "zoomVal", (v) => "+" + Math.round((v - 1) * 100) + "%");
   bind("music_volume", "music_volume", "num", "musicVal", (v) => Math.round(v * 100) + "%");
-  for (const id of ["remove_silence", "zooms", "progress_bar", "normalize_audio", "use_ai"]) bind(id, id, "check");
+  for (const id of ["remove_silence", "zooms", "progress_bar", "normalize_audio", "use_ai", "remove_fillers", "emojis", "sfx", "logo_enabled"]) bind(id, id, "check");
+  bind("sfx_volume", "sfx_volume", "num", "sfxVal", (v) => Math.round(v * 100) + "%");
+  bind("logo_scale", "logo_scale", "num", "logoScaleVal", (v) => Math.round(v * 100) + "% of width");
+  bind("logo_opacity", "logo_opacity", "num", "logoOpVal", (v) => Math.round(v * 100) + "%");
+  $("brand_font").replaceChildren(el("option", { value: "", textContent: "Style default" }),
+    ...cfg.fonts.map((f) => el("option", { value: f, textContent: f })));
+  for (const id of ["logo_position", "brand_font", "handle_text"]) bind(id, id);
+  brandControls();
+  editorControls();
   refreshHints();
 
   fileInput("video", "videoName", "clearVideo", "or upload a video file");
@@ -155,6 +163,91 @@ async function init() {
   const jobs = await loadHistory();
   const active = jobs.find((j) => j.status === "running" || j.status === "queued");
   if (active) watch(active.id);
+}
+
+function brandControls() {
+  const pick = $("brandColorPick"), on = $("brandColorOn");
+  pick.value = settings.brand_color_pick || "#ffe100";
+  on.checked = !!settings.brand_color;
+  const sync = () => { settings.brand_color_pick = pick.value; settings.brand_color = on.checked ? pick.value : ""; save(); };
+  pick.oninput = sync; on.onchange = sync;
+
+  const show = (has) => {
+    $("logoPreview").hidden = $("clearLogo").hidden = !has;
+    if (has) $("logoPreview").src = "/api/brand/logo?t=" + Date.now();
+    $("logoName").textContent = has ? "replace the logo" : "upload a logo or watermark";
+  };
+  show(cfg.logo);
+  $("logo").onchange = async () => {
+    const f = $("logo").files[0];
+    if (!f) return;
+    const form = new FormData();
+    form.append("logo", f);
+    try {
+      await api("/api/brand/logo", { method: "POST", body: form });
+      show(true);
+      if (!settings.logo_enabled) { settings.logo_enabled = true; $("logo_enabled").checked = true; save(); }
+    } catch (err) { alert(err.message); }
+    $("logo").value = "";
+  };
+  $("clearLogo").onclick = async () => {
+    await api("/api/brand/logo", { method: "DELETE" });
+    settings.logo_enabled = false; $("logo_enabled").checked = false; save();
+    show(false);
+  };
+}
+
+// ---- clip editor -----------------------------------------------------------
+let ed = null;
+
+function editorControls() {
+  const picked = () => ed && ed.words.find((w) => w.i === ed.sel);
+  $("edStart").onclick = () => { if (picked() && ed.sel <= ed.w1) { ed.w0 = ed.sel; drawEditor(); } };
+  $("edEnd").onclick = () => { if (picked() && ed.sel >= ed.w0) { ed.w1 = ed.sel; drawEditor(); } };
+  $("edFix").onclick = () => {
+    const w = picked();
+    if (!w) return;
+    const text = prompt("Correct spelling for this word:", w.w || w.orig);
+    if (text !== null && text.trim()) { w.w = text.trim(); drawEditor(); }
+  };
+  $("edHide").onclick = () => { const w = picked(); if (w) { w.w = w.w ? "" : w.orig; drawEditor(); } };
+  $("edCancel").onclick = () => $("editDlg").close();
+  $("edSave").onclick = async () => {
+    const edits = {};
+    for (const w of ed.words) if (w.w !== w.orig || w.was !== w.w) edits[w.i] = w.w;
+    const body = { w0: ed.w0, w1: ed.w1, hook: $("edHook").value, title: $("edTitle").value, description: $("edDesc").value, word_edits: edits };
+    try {
+      await api(`/api/jobs/${ed.job}/clips/${ed.index}/rerender`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      $("editDlg").close();
+      watch(ed.job);
+    } catch (err) { $("edErr").textContent = err.message; }
+  };
+}
+
+async function openEditor(jobId, index) {
+  let data;
+  try { data = await api(`/api/jobs/${jobId}/clips/${index}/words`); } catch (err) { alert(err.message); return; }
+  ed = { job: jobId, index, w0: data.w0, w1: data.w1, sel: null, words: data.words.map((w) => Object.assign(w, { was: w.w })) };
+  $("edHook").value = data.hook; $("edTitle").value = data.title; $("edDesc").value = data.description;
+  $("edErr").textContent = "";
+  drawEditor();
+  $("editDlg").showModal();
+  const first = $("edWords").querySelector(".edge");
+  if (first) first.scrollIntoView({ block: "center" });
+}
+
+function drawEditor() {
+  const byI = Object.fromEntries(ed.words.map((w) => [w.i, w]));
+  const dur = byI[ed.w1].e - byI[ed.w0].s;
+  $("edInfo").textContent = `Clip length before pause cutting: ${dur.toFixed(1)} s`;
+  $("edWords").replaceChildren(...ed.words.flatMap((w) => {
+    const inside = w.i >= ed.w0 && w.i <= ed.w1;
+    const cls = ["word", inside ? "" : "out", w.i === ed.sel ? "sel" : "", w.i === ed.w0 || w.i === ed.w1 ? "edge" : "",
+      !w.w ? "hidden" : w.w !== w.orig ? "changed" : ""].join(" ");
+    const span = el("span", { className: cls, textContent: w.w || w.orig, title: `${w.s.toFixed(1)} s` });
+    span.onclick = () => { ed.sel = w.i; drawEditor(); };
+    return [span, " "];
+  }));
 }
 
 function fileInput(id, nameId, clearId, placeholder) {
@@ -211,7 +304,7 @@ function watch(id) {
 function render(job) {
   const busy = ["queued", "running"].includes(job.status);
   $("empty").hidden = true;
-  $("jobCard").hidden = job.status === "done";
+  $("jobCard").hidden = job.status === "done" && !job.message.startsWith("Re-render failed");
   $("go").disabled = busy;
   $("go").textContent = busy ? "Working..." : "Generate shorts";
   $("cancel").hidden = !busy;
@@ -231,8 +324,9 @@ function render(job) {
     const how = job.engine === "claude" ? "picked by Claude" : "picked by offline scoring";
     $("resultsTitle").textContent = `${job.title || "Your video"}: ${clips.length} clip${clips.length > 1 ? "s" : ""}, ${how}`;
     const box = $("clips");
-    if (box.dataset.job !== job.id || box.childElementCount !== clips.length) {
-      box.dataset.job = job.id;
+    const sig = job.id + "|" + clips.map((c) => c.file).join("|");
+    if (box.dataset.sig !== sig) {
+      box.dataset.sig = sig;
       box.replaceChildren(...clips.map((c) => clipCard(job.id, c)));
     }
   }
@@ -242,13 +336,18 @@ function clipCard(jobId, c) {
   const base = `/media/${jobId}/`;
   const tags = c.hashtags.map((h) => "#" + h).join(" ");
   const post = `${c.title}\n\n${c.description}\n\n${tags}`.trim();
-  const copy = el("button", { type: "button", textContent: "Copy post text" });
+  const copy = el("button", { type: "button", textContent: "Copy text" });
   copy.onclick = async () => {
     try { await navigator.clipboard.writeText(post); copy.textContent = "Copied"; } catch (e) { prompt("Copy the text:", post); }
-    setTimeout(() => (copy.textContent = "Copy post text"), 1500);
+    setTimeout(() => (copy.textContent = "Copy text"), 1500);
   };
   const cls = c.score >= 75 ? "" : c.score >= 55 ? " mid" : " low";
   const styleName = c.style ? (cfg.caption_styles[c.style] || {}).name : "No captions";
+  const edit = el("button", { type: "button", textContent: "Edit" });
+  edit.onclick = () => openEditor(jobId, c.index);
+  const subs = el("div", { className: "subs" }, Object.entries(c.scores || {}).filter(([, v]) => v > 0).map(([k, v]) =>
+    el("div", { className: "sub" }, [`${k[0].toUpperCase()}${k.slice(1)} ${v}`,
+      el("div", { className: "track" }, el("div", { className: "fill" + (v >= 75 ? "" : v >= 55 ? " mid" : " low"), style: `width:${v}%` }))])));
   const mins = (t) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}`;
   return el("div", { className: "clip" }, [
     el("video", { src: base + c.file, poster: base + c.thumb, controls: true, preload: "none", playsInline: true }),
@@ -260,11 +359,12 @@ function clipCard(jobId, c) {
         el("span", { textContent: styleName }),
         el("span", { textContent: `from ${mins(c.source_start)}` }),
       ]),
+      subs,
       el("div", { className: "title", textContent: c.title }),
       el("div", { className: "text", textContent: `${c.description} ${tags}` }),
       el("div", { className: "why", textContent: c.reason }),
       el("div", { className: "actions" }, [
-        el("a", { className: "dl", href: base + c.file + "?download=1", textContent: "Download" }), copy]),
+        el("a", { className: "dl", href: base + c.file + "?download=1", textContent: "Download" }), edit, copy]),
     ]),
   ]);
 }
