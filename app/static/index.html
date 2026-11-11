@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ClipForge</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <div class="brand"><span class="logo">▶</span> ClipForge <small>long video in, viral-ready shorts out</small></div>
+  <div class="pills" id="pills"></div>
+  <button class="ghost" id="btnSettings">AI settings</button>
+</header>
+
+<main>
+  <section class="panel" id="controls">
+    <div class="card">
+      <h2>1. Source</h2>
+      <input type="url" id="url" placeholder="Paste a YouTube link, e.g. https://www.youtube.com/watch?v=..." autocomplete="off">
+      <div class="row between">
+        <label class="file"><input type="file" id="video" accept="video/*"><span id="videoName">or upload a video file</span></label>
+        <button class="link" id="clearVideo" hidden>remove file</button>
+      </div>
+      <button class="primary" id="go">Generate shorts</button>
+      <p class="hint" id="formError"></p>
+    </div>
+
+    <div class="card">
+      <h2>2. Output</h2>
+      <label>Aspect ratio</label>
+      <div class="seg" id="aspect"></div>
+      <div class="grid3">
+        <div><label>Resolution</label><select id="resolution">
+          <option value="720p">720p</option><option value="1080p">1080p (Full HD)</option>
+          <option value="1440p">1440p (2K)</option><option value="4k">4K</option></select></div>
+        <div><label>Frame rate</label><select id="fps"><option value="30">30 fps</option><option value="60">60 fps</option></select></div>
+        <div><label>Render quality</label><select id="quality">
+          <option value="fast">Fast</option><option value="balanced">Balanced</option><option value="high">High (slow)</option></select></div>
+      </div>
+      <p class="hint" id="sizeHint"></p>
+      <label>Number of clips: <b id="numClipsVal"></b></label>
+      <input type="range" id="num_clips" min="1" max="15" step="1">
+      <div class="grid2">
+        <div><label>Shortest clip (seconds)</label><input type="number" id="min_len" min="5" max="170"></div>
+        <div><label>Longest clip (seconds)</label><input type="number" id="max_len" min="10" max="180"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>3. Framing</h2>
+      <div class="seg" id="reframe"></div>
+      <p class="hint" id="reframeHint"></p>
+    </div>
+
+    <div class="card">
+      <h2>4. Captions</h2>
+      <div class="styles" id="caption_style"></div>
+      <div class="grid2">
+        <div><label>Position</label><select id="caption_position">
+          <option value="lower">Lower third</option><option value="center">Center</option><option value="top">Upper</option></select></div>
+        <div><label>Size: <b id="capScaleVal"></b></label><input type="range" id="caption_scale" min="0.6" max="1.6" step="0.05"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>5. Hook</h2>
+      <div class="grid2">
+        <div><label>Opening text style</label><select id="hook_style"></select></div>
+        <div><label>Show for (seconds)</label><input type="number" id="hook_seconds" min="1" max="10" step="0.5"></div>
+      </div>
+      <p class="hint">The hook is a short line shown at the top during the first seconds to stop the scroll.</p>
+    </div>
+
+    <div class="card">
+      <h2>6. Edits</h2>
+      <label class="check"><input type="checkbox" id="remove_silence"> Cut out pauses (jump cuts)</label>
+      <label class="check"><input type="checkbox" id="zooms"> Punch-in zooms on new sentences</label>
+      <label class="check"><input type="checkbox" id="progress_bar"> Progress bar along the bottom</label>
+      <label class="check"><input type="checkbox" id="normalize_audio"> Even out loudness</label>
+      <div class="grid2">
+        <div><label>Cut pauses longer than: <b id="gapVal"></b></label><input type="range" id="silence_gap" min="0.25" max="1.5" step="0.05"></div>
+        <div><label>Zoom strength: <b id="zoomVal"></b></label><input type="range" id="zoom_amount" min="1.04" max="1.3" step="0.01"></div>
+      </div>
+      <label>Background music (optional)</label>
+      <div class="row between">
+        <label class="file"><input type="file" id="music" accept="audio/*"><span id="musicName">choose an audio file</span></label>
+        <button class="link" id="clearMusic" hidden>remove</button>
+      </div>
+      <label>Music volume: <b id="musicVal"></b></label>
+      <input type="range" id="music_volume" min="0" max="0.5" step="0.01">
+    </div>
+
+    <div class="card">
+      <h2>7. Analysis</h2>
+      <label class="check"><input type="checkbox" id="use_ai"> Let Claude pick the moments and write the hooks</label>
+      <p class="hint" id="aiHint"></p>
+      <label>Speech recognition model</label>
+      <select id="whisper_model"></select>
+      <label>Direction for the AI (optional)</label>
+      <textarea id="instructions" rows="2" placeholder="e.g. focus on the funniest moments, avoid the sponsor segment"></textarea>
+    </div>
+  </section>
+
+  <section class="panel" id="output">
+    <div class="card" id="jobCard" hidden>
+      <div class="row between">
+        <h2 id="jobTitle">Working</h2>
+        <button class="ghost danger" id="cancel">Cancel</button>
+      </div>
+      <div class="steps" id="steps"></div>
+      <div class="bar"><div id="barFill"></div></div>
+      <p id="jobMsg" class="msg"></p>
+      <p id="jobErr" class="error"></p>
+      <details><summary>Details</summary><pre id="jobLog"></pre></details>
+    </div>
+
+    <div id="results" hidden>
+      <div class="row between wrap">
+        <h2 id="resultsTitle"></h2>
+        <div class="row">
+          <button class="ghost" id="remix" title="Render again from the same video with the settings on the left. Skips download and transcription.">Re-run with current settings</button>
+          <button class="ghost" id="openFolder">Open folder</button>
+        </div>
+      </div>
+      <div class="clips" id="clips"></div>
+    </div>
+
+    <div class="card empty" id="empty">
+      <h2>Your shorts will appear here</h2>
+      <p>Paste a link on the left, pick how you want the clips to look, and press Generate. The app downloads the video, transcribes it, finds the strongest moments, then cuts, reframes and captions each one.</p>
+    </div>
+
+    <div class="card" id="historyCard" hidden>
+      <h2>Previous runs</h2>
+      <div id="history"></div>
+    </div>
+  </section>
+</main>
+
+<dialog id="settingsDlg">
+  <form method="dialog">
+    <h2>AI settings</h2>
+    <p class="hint">With an Anthropic API key, Claude reads the transcript, picks the best moments and writes the hooks, titles and captions. Without one the app still works using simpler offline scoring. The key is stored only on this computer.</p>
+    <label>Anthropic API key</label>
+    <input type="password" id="apiKey" placeholder="sk-ant-..." autocomplete="off">
+    <p class="hint" id="keyState"></p>
+    <label>Claude model</label>
+    <select id="model"></select>
+    <div class="row end">
+      <button class="ghost" value="cancel">Close</button>
+      <button class="primary small" id="saveSettings" value="save">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
