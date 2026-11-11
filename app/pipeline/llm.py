@@ -31,9 +31,9 @@ PROVIDERS: dict[str, dict] = {
     "mistral": {"name": "Mistral (free tier)", "base_url": "https://api.mistral.ai/v1",
                 "model": "mistral-small-latest", "chunk": 80_000, "key_url": "https://console.mistral.ai/api-keys"},
     "ollama": {"name": "Ollama (runs on this PC, free)", "base_url": "http://localhost:11434/v1",
-               "model": "llama3.1", "chunk": 9_000, "local": True, "key_url": "https://ollama.com/download"},
+               "model": "llama3.1", "chunk": 7_000, "local": True, "key_url": "https://ollama.com/download"},
     "lmstudio": {"name": "LM Studio (runs on this PC, free)", "base_url": "http://localhost:1234/v1",
-                 "model": "", "chunk": 9_000, "local": True, "key_url": "https://lmstudio.ai"},
+                 "model": "", "chunk": 5_000, "local": True, "key_url": "https://lmstudio.ai"},
     "custom": {"name": "Other (any OpenAI-compatible API)", "base_url": "", "model": "", "chunk": 30_000, "key_url": ""},
 }
 
@@ -108,11 +108,60 @@ def _scrub(text: str, cfg: dict) -> str:
     return text.replace(cfg["api_key"], "***") if cfg.get("api_key") else text
 
 
+def _ollama_chat(system: str, user: str, cfg: dict, want_json: bool, max_tokens: int, schema: dict | None,
+                 say: Callable[[str], None], read_timeout: float) -> str:
+    """Ollama through its own API instead of the OpenAI-compatible one. Only the native
+    API lets the request set the context window; with the default (2,048 or 4,096 tokens)
+    Ollama silently cuts long prompts from the front, which removes the instructions. It
+    also accepts a JSON schema that the answer is forced to follow."""
+    host = re.sub(r"/v1/?$", "", cfg["base_url"])
+    out_tokens = min(max_tokens, 3000)
+    need = int((len(system) + len(user)) / 3.0) + out_tokens + 256
+    num_ctx = next(n for n in (4096, 8192, 16384, 32768, 65536) if n >= need or n == 65536)
+    payload = {"model": cfg["model"], "stream": False,
+               "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+               "options": {"num_ctx": max(num_ctx, 8192), "num_predict": out_tokens, "temperature": 0.4}}
+    if schema is not None:
+        payload["format"] = schema
+    elif want_json:
+        payload["format"] = "json"
+    url = host + "/api/chat"
+    started = time.time()
+    config.applog(f"[ai] request to Ollama model={cfg['model']} url={url} prompt_chars={len(system) + len(user)} "
+                  f"num_ctx={payload['options']['num_ctx']} schema={'yes' if schema is not None else 'no'}")
+    try:
+        resp = httpx.post(url, json=payload, timeout=httpx.Timeout(read_timeout, connect=15.0))
+    except httpx.ConnectError as exc:
+        say(f"could not connect to {url}: {exc}")
+        raise RuntimeError(f"Could not connect to Ollama at {host}. Is Ollama running on this PC?") from exc
+    except httpx.TimeoutException as exc:
+        say(f"no answer from Ollama model {cfg['model']} within {read_timeout:.0f}s")
+        raise RuntimeError(f"Ollama did not answer within {read_timeout:.0f} seconds with model '{cfg['model']}'. "
+                           "The model may be too large for this PC; try a smaller one.") from exc
+    config.applog(f"[ai] answer status={resp.status_code} in {time.time() - started:.1f}s body={resp.text[:300]!r}")
+    if resp.status_code != 200:
+        detail = _explain(resp)
+        say(f"Ollama error: {detail}")
+        if resp.status_code == 404:
+            raise RuntimeError(f"Ollama does not have the model '{cfg['model']}'. Download it first "
+                               f"(ollama pull {cfg['model']}) or pick another model in AI settings.")
+        raise RuntimeError(f"Ollama returned an error ({detail}).")
+    data = resp.json()
+    seen = int(data.get("prompt_eval_count") or 0)
+    if seen and seen < (len(system) + len(user)) / 6.5:
+        say(f"Ollama read only {seen} tokens of a {len(system) + len(user)} character request; "
+            "the model's context window is too small, so part of the request was cut off.")
+    return (data.get("message") or {}).get("content") or ""
+
+
 def chat(system: str, user: str, cfg: dict | None = None, want_json: bool = True, max_tokens: int = 8000,
-         log: Callable[[str], None] | None = None, retries: int = 3, read_timeout: float | None = None) -> str:
+         log: Callable[[str], None] | None = None, retries: int = 3, read_timeout: float | None = None,
+         schema: dict | None = None) -> str:
     """One chat completion. Waits and retries when the free tier says to slow down."""
     cfg = cfg or current()
     say = lambda msg: (config.applog(_scrub(f"[ai] {msg}", cfg)), log and log(msg))
+    if cfg["provider"] == "ollama":
+        return _ollama_chat(system, user, cfg, want_json, max_tokens, schema, say, read_timeout or 900.0)
     payload = {"model": cfg["model"], "max_tokens": max_tokens,
                "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
     if want_json:
@@ -188,7 +237,7 @@ def chat_json(system: str, user: str, schema: Type[BaseModel], shape: str,
     prompt = user
     error = ""
     for _ in range(2):
-        text = chat(system, prompt, cfg, True, max_tokens, log)
+        text = chat(system, prompt, cfg, True, max_tokens, log, schema=schema.model_json_schema())
         try:
             return schema.model_validate(_extract_json(text))
         except (ValueError, ValidationError) as exc:

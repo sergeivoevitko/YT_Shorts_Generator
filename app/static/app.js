@@ -230,7 +230,7 @@ function aiSettings() {
     $("testResult").textContent = "";
     const hint = $("provHint");
     hint.replaceChildren(claude ? "Best quality. Paid by usage, a few cents per video. "
-      : p.local ? "Runs on this PC: free, private, no limits. Needs the program installed and a model downloaded. Slower without a good graphics card. "
+      : p.local ? "Runs on this PC: free, private, no limits. Needs the program installed and a model downloaded. Use a general chat model (for example qwen2.5:7b, llama3.1:8b or gemma3); models made for coding pick poor moments. "
       : custom ? "Any service with an OpenAI-compatible API. Enter its address, key and model name. "
       : "Free within daily limits, no credit card. Your transcripts are sent to this provider. ");
     if (p.key_url) hint.append(el("a", { href: p.key_url, target: "_blank", rel: "noopener", textContent: p.local ? "Download it here" : "Get a key here", style: "color:var(--accent)" }));
