@@ -125,3 +125,5 @@ body[data-mode=story] .only-clips, body[data-mode=clips] .only-story { display: 
 .drop input { display: none; }
 .drop b { display: block; color: var(--text); font-size: 14.5px; }
 .drop span { font-size: 12.5px; }
+
+.warnbox { border-color: rgba(255,225,0,.5); color: var(--accent); font-size: 13.5px; margin: 0; }

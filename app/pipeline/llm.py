@@ -21,7 +21,7 @@ from .. import config
 PROVIDERS: dict[str, dict] = {
     "claude": {"name": "Claude (paid, best quality)", "paid": True, "key_url": "https://console.anthropic.com/settings/keys"},
     "gemini": {"name": "Google Gemini (free tier)", "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
-               "model": "gemini-2.5-flash", "chunk": 300_000, "key_url": "https://aistudio.google.com/apikey"},
+               "model": "gemini-3.5-flash", "chunk": 300_000, "key_url": "https://aistudio.google.com/apikey"},
     "groq": {"name": "Groq (free tier, very fast)", "base_url": "https://api.groq.com/openai/v1",
              "model": "openai/gpt-oss-120b", "chunk": 16_000, "key_url": "https://console.groq.com/keys"},
     "cerebras": {"name": "Cerebras (free tier, very fast)", "base_url": "https://api.cerebras.ai/v1",
@@ -51,6 +51,8 @@ def current() -> dict:
     per = (saved.get("providers") or {}).get(key, {})
     base = (per.get("base_url") or preset["base_url"]).rstrip("/")
     model = per.get("model") or preset["model"]
+    if key == "gemini" and model in ("gemini-2.5-flash", "gemini-2.5-pro"):
+        model = preset["model"]  # retired by Google; saved by an earlier version of this app
     api_key = (per.get("api_key") or "").strip()
     local = bool(preset.get("local")) or base.startswith(("http://localhost", "http://127.0.0.1"))
     return {"provider": key, "name": preset["name"].split(" (")[0], "model": model, "api_key": api_key,
@@ -92,24 +94,53 @@ def list_models(cfg: dict | None = None) -> list[str]:
     return sorted(n.removeprefix("models/") for n in names if n)
 
 
+def _retry_delay(resp: httpx.Response) -> float | None:
+    """Seconds the provider asks us to wait, from the header or the error body."""
+    try:
+        return float(resp.headers.get("retry-after", ""))
+    except ValueError:
+        pass
+    m = re.search(r'"retryDelay":\s*"([\d.]+)s"', resp.text) or re.search(r"retry in ([\d.]+)\s*s", resp.text, re.I)
+    return float(m.group(1)) if m else None
+
+
+def _scrub(text: str, cfg: dict) -> str:
+    return text.replace(cfg["api_key"], "***") if cfg.get("api_key") else text
+
+
 def chat(system: str, user: str, cfg: dict | None = None, want_json: bool = True, max_tokens: int = 8000,
-         log: Callable[[str], None] | None = None) -> str:
+         log: Callable[[str], None] | None = None, retries: int = 3, read_timeout: float | None = None) -> str:
     """One chat completion. Waits and retries when the free tier says to slow down."""
     cfg = cfg or current()
+    say = lambda msg: (config.applog(_scrub(f"[ai] {msg}", cfg)), log and log(msg))
     payload = {"model": cfg["model"], "max_tokens": max_tokens,
                "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
     if want_json:
         payload["response_format"] = {"type": "json_object"}
-    timeout = httpx.Timeout(900.0 if cfg["local"] else 240.0, connect=15.0)
+    read_timeout = read_timeout or (900.0 if cfg["local"] else 150.0)
+    timeout = httpx.Timeout(read_timeout, connect=15.0)
+    url = cfg["base_url"] + "/chat/completions"
     last = ""
-    for attempt in range(4):
+    for attempt in range(retries + 1):
+        started = time.time()
+        config.applog(f"[ai] request to {cfg['name']} model={cfg['model']} url={url} "
+                      f"prompt_chars={len(system) + len(user)} attempt={attempt + 1}")
         try:
-            resp = httpx.post(cfg["base_url"] + "/chat/completions", headers=_headers(cfg), json=payload, timeout=timeout)
+            resp = httpx.post(url, headers=_headers(cfg), json=payload, timeout=timeout)
         except httpx.ConnectError as exc:
-            hint = " Is it running on this PC?" if cfg["local"] else ""
+            hint = " Is it running on this PC?" if cfg["local"] else " Check your internet connection or firewall."
+            say(f"could not connect to {url}: {exc}")
             raise RuntimeError(f"Could not connect to {cfg['name']} at {cfg['base_url']}.{hint}") from exc
         except httpx.TimeoutException as exc:
-            raise RuntimeError(f"{cfg['name']} took too long to answer.") from exc
+            say(f"no answer from {cfg['name']} model {cfg['model']} within {read_timeout:.0f}s")
+            raise RuntimeError(f"{cfg['name']} did not answer within {read_timeout:.0f} seconds with model "
+                               f"'{cfg['model']}'. That model may be overloaded or not offered on the free tier. "
+                               "Choose another model in AI settings.") from exc
+        except httpx.HTTPError as exc:
+            say(f"network error: {type(exc).__name__}: {exc}")
+            raise RuntimeError(f"Network problem while talking to {cfg['name']}: {exc}") from exc
+        config.applog(_scrub(f"[ai] answer status={resp.status_code} in {time.time() - started:.1f}s "
+                             f"body={resp.text[:300]!r}", cfg))
         if resp.status_code == 200:
             try:
                 return resp.json()["choices"][0]["message"]["content"] or ""
@@ -119,17 +150,19 @@ def chat(system: str, user: str, cfg: dict | None = None, want_json: bool = True
         if resp.status_code == 400 and "response_format" in payload:
             payload.pop("response_format")  # not every server supports JSON mode; the prompt asks for JSON anyway
             continue
-        if resp.status_code in (429, 500, 502, 503, 529) and attempt < 3:
-            try:
-                wait = float(resp.headers.get("retry-after", ""))
-            except ValueError:
-                wait = 8.0 * (attempt + 1)
-            wait = min(max(wait, 2.0), 65.0)
-            if log:
-                log(f"{cfg['name']} asked to slow down ({resp.status_code}); waiting {wait:.0f}s.")
-            time.sleep(wait)
-            continue
+        if resp.status_code in (429, 500, 502, 503, 529):
+            asked = _retry_delay(resp)
+            if resp.status_code == 429 and asked is not None and asked > 90:
+                say(f"quota used up for model {cfg['model']} (retry in {asked:.0f}s)")
+                raise RuntimeError(f"The free quota for model '{cfg['model']}' at {cfg['name']} is used up "
+                                   f"(resets in about {asked / 3600:.1f} hours). Choose another model in AI settings.")
+            if attempt < retries:
+                wait = min(max(asked if asked is not None else 8.0 * (attempt + 1), 2.0), 65.0)
+                say(f"{cfg['name']} asked to slow down ({resp.status_code}); waiting {wait:.0f}s.")
+                time.sleep(wait)
+                continue
         break
+    say(f"{cfg['name']} error: {last}")
     raise RuntimeError(f"{cfg['name']} returned an error ({last}).")
 
 
@@ -169,5 +202,6 @@ def test() -> str:
     cfg = current()
     if not cfg["ready"]:
         raise RuntimeError("Fill in the missing settings first (key or model).")
-    text = chat("You are a connection test.", 'Reply with this exact JSON: {"ok": true}', cfg, True, 200)
+    text = chat("You are a connection test.", 'Reply with this exact JSON: {"ok": true}', cfg, True, 300,
+                retries=0, read_timeout=30.0)
     return f"{cfg['name']} answered with model {cfg['model']}: {text.strip()[:80]}"

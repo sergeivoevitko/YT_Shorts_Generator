@@ -116,7 +116,26 @@ def ai_test():
             return {"ok": True, "message": f"Claude answered with model {msg.model}: {text.strip()[:60]}"}
         return {"ok": True, "message": llm.test()}
     except Exception as exc:
-        return {"ok": False, "message": str(exc)[:400]}
+        config.applog(f"[ai] connection test failed: {exc}")
+        return {"ok": False, "message": str(exc)[:500]}
+
+
+@app.get("/api/log")
+def get_log(lines: int = 300):
+    try:
+        text = config.LOG_FILE.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        text = ""
+    return {"path": str(config.LOG_FILE), "text": "\n".join(text.splitlines()[-max(10, min(lines, 2000)):])}
+
+
+@app.exception_handler(Exception)
+async def log_unhandled(request, exc):
+    import traceback
+
+    config.applog(f"[server] {request.method} {request.url.path} crashed: {exc!r}\n"
+                  + "".join(traceback.format_exception(exc, limit=6)))
+    return JSONResponse({"detail": f"Internal error: {exc}"}, status_code=500)
 
 
 @app.get("/api/ai/models")
@@ -125,7 +144,11 @@ def ai_models():
     if cur["provider"] == "claude":
         return {"models": list(config.CLAUDE_MODELS)}
     try:
-        return {"models": llm.list_models(cur)}
+        names = llm.list_models(cur)
+        # Hide models that cannot do this job (speech, images, embeddings, live audio).
+        skip = ("tts", "image", "embedding", "audio", "live", "veo", "lyria", "imagen", "aqa", "banana", "robotics",
+                "computer-use", "deep-research", "whisper", "guard")
+        return {"models": [n for n in names if not any(x in n.lower() for x in skip)]}
     except Exception as exc:
         return {"models": [], "error": str(exc)[:300]}
 
@@ -317,6 +340,8 @@ def main() -> None:
     port = int(os.environ.get("CLIPFORGE_PORT", "8765"))
     if os.environ.get("CLIPFORGE_NO_BROWSER") != "1":
         threading.Timer(1.2, lambda: webbrowser.open(f"http://{host}:{port}")).start()
+    config.applog(f"[server] started on http://{host}:{port}, ffmpeg={config.ffmpeg_path() or 'missing'}, "
+                  f"ai={llm.current()['name']}/{llm.current()['model']}")
     print(f"\n  ClipForge is running at http://{host}:{port}\n  Keep this window open. Press Ctrl+C to stop.\n")
     uvicorn.run(app, host=host, port=port, log_level="warning")
 

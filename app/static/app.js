@@ -93,7 +93,7 @@ function refreshHints() {
   $("reframeHint").textContent = story
     ? (settings.reframe === "blur" ? REFRAME.blur[1] : "Crops the middle of each clip to fill the frame. Use Fit + blur to keep whole landscape shots visible.")
     : REFRAME[settings.reframe][1];
-  $("useAiLabel").textContent = story ? "Let Claude write the story" : "Let Claude pick the moments and write the hooks";
+  $("useAiLabel").textContent = story ? "Let the AI write the story" : "Let the AI pick the moments and write the hooks";
   if (!$("go").disabled) $("go").textContent = goLabel();
   $("storyHint").textContent = settings.story_text.trim()
     ? `Your text: about ${Math.round(settings.story_text.trim().split(/\s+/).length / 2.5)} seconds when spoken. Length and theme are ignored.`
@@ -175,6 +175,20 @@ async function init() {
     if (!r.ok) alert("Your clips are in:\n" + r.path);
   };
   aiSettings();
+  const loadLog = async () => {
+    const r = await api("/api/log?lines=400");
+    $("logText").textContent = r.text || "The log is empty.";
+    $("logPath").textContent = "File: " + r.path;
+    $("logText").scrollTop = $("logText").scrollHeight;
+  };
+  $("btnLog").onclick = async () => { $("logDlg").showModal(); await loadLog(); };
+  $("logRefresh").onclick = loadLog;
+  $("logClose").onclick = () => $("logDlg").close();
+  $("logCopy").onclick = async () => {
+    try { await navigator.clipboard.writeText($("logText").textContent); $("logCopy").textContent = "Copied"; }
+    catch (e) { const sel = getSelection(); sel.selectAllChildren($("logText")); }
+    setTimeout(() => ($("logCopy").textContent = "Copy"), 1500);
+  };
 
   const jobs = await loadHistory();
   const active = jobs.find((j) => j.status === "running" || j.status === "queued");
@@ -233,7 +247,8 @@ function aiSettings() {
     try { await saveNow(); $("settingsDlg").close(); } catch (err) { $("testResult").textContent = err.message; }
   };
   $("testAi").onclick = async () => {
-    $("testResult").textContent = "Testing...";
+    $("testResult").style.color = "";
+    $("testResult").textContent = "Testing, this takes up to 30 seconds...";
     try {
       await saveNow();
       const r = await api("/api/ai/test", { method: "POST" });
@@ -417,6 +432,10 @@ function render(job) {
   $("jobErr").textContent = job.status === "error" ? job.error : "";
   $("jobLog").textContent = (job.log || []).join("\n");
 
+  // Say clearly when the AI was meant to be used but the run fell back.
+  const fell = (job.log || []).filter((l) => /Using offline scoring instead|Using a built-in story instead/.test(l)).pop();
+  $("aiWarn").hidden = !fell;
+  if (fell) $("aiWarn").textContent = "The AI was not used for this run. " + fell.replace(/^\[[\d:]+\]\s*/, "") + " Open AI settings and press Save and test.";
   const clips = job.clips || [];
   $("results").hidden = clips.length === 0;
   $("remix").hidden = $("openFolder").hidden = busy;

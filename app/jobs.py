@@ -233,6 +233,7 @@ class JobManager:
                     job.status, job.error = "error", str(exc)
                     job.message = "Failed"
                     job.log.append(traceback.format_exc(limit=4))
+                    config.applog(f"[job {job.id}] FAILED: {exc}\n{traceback.format_exc(limit=6)}")
             job.finished = time.time()
             job.save()
 
@@ -292,6 +293,7 @@ class JobManager:
 
         def log(msg: str) -> None:
             job.log.append(f"[{time.strftime('%H:%M:%S')}] {msg}")
+            config.applog(f"[job {job.id}] {msg}")
 
         try:
             result = render.render_clip(meta["path"], meta, plan, words, s, job.dir, index, old.get("style"),
@@ -315,6 +317,7 @@ class JobManager:
 
         def log(msg: str) -> None:
             job.log.append(f"[{time.strftime('%H:%M:%S')}] {msg}")
+            config.applog(f"[job {job.id}] {msg}")
 
         def stage(name: str):
             base, weight = offsets[name]
@@ -411,6 +414,7 @@ class JobManager:
 
         def log(msg: str) -> None:
             job.log.append(f"[{time.strftime('%H:%M:%S')}] {msg}")
+            config.applog(f"[job {job.id}] {msg}")
 
         def stage(name: str):
             base, weight = offsets[name]

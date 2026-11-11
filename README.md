@@ -96,6 +96,12 @@ your transcripts are sent to that provider; with Ollama or LM Studio nothing lea
 
 ## Troubleshooting
 
+- **Something went wrong and you want to see why**: press **Log** in the top right. It shows everything the
+  app did, including every AI request and the exact error text. Press Copy to share it. Keys are never logged.
+  The same text is in `workspace/clipforge.log`.
+- **A run says "picked by offline scoring" although an AI is set up**: a yellow box above the clips gives the
+  reason. Open AI settings and press **Save and test**. With Gemini, `gemini-3.5-flash` is a model that works
+  on the free tier; the newest models often have no free quota or do not answer.
 - **Download fails**: run `update.bat` and try again. If YouTube asks for a sign-in, download the video
   yourself and use the upload option.
 - **"YouTube: install Deno" in the header**: run `install.bat` again, then reopen `start.bat`.

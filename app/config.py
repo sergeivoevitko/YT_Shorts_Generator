@@ -25,6 +25,28 @@ CLAUDE_MODELS = {
 DEFAULT_MODEL = "claude-opus-5-5"
 
 
+LOG_FILE = WORKSPACE / "clipforge.log"
+
+
+def applog(message: str) -> None:
+    """Append a line to the app log (shown under Log in the app). Never pass secrets."""
+    import time
+
+    line = f"{time.strftime('%Y-%m-%d %H:%M:%S')} {message}"
+    try:
+        WORKSPACE.mkdir(parents=True, exist_ok=True)
+        if LOG_FILE.exists() and LOG_FILE.stat().st_size > 1_000_000:
+            LOG_FILE.write_text(LOG_FILE.read_text(encoding="utf-8", errors="replace")[-300_000:], encoding="utf-8")
+        with LOG_FILE.open("a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+    except OSError:
+        pass
+    try:
+        print(line, flush=True)
+    except Exception:
+        pass
+
+
 def ensure_dirs() -> None:
     JOBS_DIR.mkdir(parents=True, exist_ok=True)
 
