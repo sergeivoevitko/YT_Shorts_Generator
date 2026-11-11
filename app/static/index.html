@@ -205,19 +205,33 @@
 </main>
 
 <dialog id="settingsDlg">
-  <form method="dialog">
-    <h2>AI settings</h2>
-    <p class="hint">With an Anthropic API key, Claude reads the transcript, picks the best moments and writes the hooks, titles and captions. Without one the app still works using simpler offline scoring. The key is stored only on this computer.</p>
-    <label>Anthropic API key</label>
-    <input type="password" id="apiKey" placeholder="sk-ant-..." autocomplete="off">
+  <h2>AI settings</h2>
+  <p class="hint">The AI reads the transcript, picks the best moments and writes hooks, captions and stories. Choose a paid, free or local provider. Without one the app still works using simpler offline scoring. Keys are stored only on this computer.</p>
+  <label>AI provider</label>
+  <select id="provider"></select>
+  <p class="hint" id="provHint"></p>
+  <div id="urlRow">
+    <label>Server address</label>
+    <input type="text" id="baseUrl" placeholder="https://.../v1" autocomplete="off">
+  </div>
+  <div id="keyRow">
+    <label>API key</label>
+    <input type="password" id="apiKey" autocomplete="off">
     <p class="hint" id="keyState"></p>
-    <label>Claude model</label>
-    <select id="model"></select>
-    <div class="row end">
-      <button class="ghost" value="cancel">Close</button>
-      <button class="primary small" id="saveSettings" value="save">Save</button>
-    </div>
-  </form>
+  </div>
+  <label>Model</label>
+  <select id="model"></select>
+  <input type="text" id="modelText" list="modelList" autocomplete="off" placeholder="model name">
+  <datalist id="modelList"></datalist>
+  <div class="row wrap" style="margin-top:12px">
+    <button type="button" class="ghost" id="loadModels">Show available models</button>
+    <button type="button" class="ghost" id="testAi">Save and test</button>
+  </div>
+  <p class="hint" id="testResult"></p>
+  <div class="row end">
+    <button type="button" class="ghost" id="closeSettings">Close</button>
+    <button type="button" class="primary small" id="saveSettings">Save</button>
+  </div>
 </dialog>
 
 <dialog id="editDlg" class="wide">

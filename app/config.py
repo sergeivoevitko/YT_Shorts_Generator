@@ -92,12 +92,21 @@ def js_runtimes() -> dict:
     return runtimes
 
 
+def _ai_status() -> dict:
+    from .pipeline import llm
+
+    cur = llm.current()
+    return {"provider": cur["provider"], "name": cur["name"], "model": cur["model"], "ready": cur["ready"],
+            "local": cur["local"], "base_url": cur["base_url"], "has_key": bool(cur["api_key"])}
+
+
 def system_status() -> dict:
     caps = ffmpeg_capabilities()
     return {
         "ffmpeg": caps,
         "js_runtime": sorted(js_runtimes().keys()),
         "api_key_set": bool(get_api_key()),
+        "ai": _ai_status(),
         "model": get_model(),
         "face_model": (MODELS_DIR / "yunet.onnx").exists(),
     }

@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import config
 from .jobs import DEFAULTS, JobManager, new_id
-from .pipeline import captions, render, story, transcribe, voice
+from .pipeline import captions, llm, render, story, transcribe, voice
 
 app = FastAPI(title="ClipForge")
 manager = JobManager()
@@ -54,13 +54,80 @@ def get_config():
 
 @app.post("/api/settings")
 def set_settings(payload: dict):
-    data = {}
-    if "api_key" in payload:
-        data["api_key"] = str(payload["api_key"]).strip()
-    if payload.get("model") in config.CLAUDE_MODELS:
-        data["model"] = payload["model"]
+    """Save the AI provider choice. Keys are kept per provider, only on this computer."""
+    data: dict = {}
+    provider = payload.get("provider")
+    if provider in llm.PROVIDERS:
+        data["provider"] = provider
+    provider = provider if provider in llm.PROVIDERS else llm.current()["provider"]
+    key = str(payload.get("api_key") or "").strip()
+    model = str(payload.get("model") or "").strip()[:120]
+    if provider == "claude":
+        if key:
+            data["api_key"] = key
+        if model in config.CLAUDE_MODELS:
+            data["model"] = model
+    else:
+        allp = dict(config.load_settings().get("providers") or {})
+        per = dict(allp.get(provider) or {})
+        if key:
+            per["api_key"] = key
+        if "model" in payload:
+            per["model"] = model
+        if "base_url" in payload:
+            url = str(payload.get("base_url") or "").strip().rstrip("/")
+            if url and not re.match(r"^https?://", url):
+                raise HTTPException(400, "The server address must start with http:// or https://")
+            per["base_url"] = url
+        allp[provider] = per
+        data["providers"] = allp
     config.save_settings(data)
     return config.system_status()
+
+
+@app.get("/api/ai/providers")
+def ai_providers():
+    saved = config.load_settings().get("providers") or {}
+    out = {}
+    for key, preset in llm.PROVIDERS.items():
+        per = saved.get(key, {})
+        out[key] = {"name": preset["name"], "key_url": preset.get("key_url", ""), "local": bool(preset.get("local")),
+                    "default_model": preset.get("model", ""), "default_url": preset.get("base_url", ""),
+                    "model": per.get("model") or preset.get("model", ""),
+                    "base_url": per.get("base_url") or preset.get("base_url", ""),
+                    "has_key": bool(per.get("api_key")) if key != "claude" else bool(config.get_api_key())}
+    out["claude"]["model"] = config.get_model()
+    return out
+
+
+@app.post("/api/ai/test")
+def ai_test():
+    cur = llm.current()
+    try:
+        if cur["provider"] == "claude":
+            if not cur["ready"]:
+                raise RuntimeError("Paste your Anthropic API key first.")
+            import anthropic
+
+            client = anthropic.Anthropic(api_key=cur["api_key"], timeout=60.0)
+            msg = client.messages.create(model=cur["model"], max_tokens=64,
+                                         messages=[{"role": "user", "content": "Reply with the single word: ready"}])
+            text = next((b.text for b in msg.content if b.type == "text"), "")
+            return {"ok": True, "message": f"Claude answered with model {msg.model}: {text.strip()[:60]}"}
+        return {"ok": True, "message": llm.test()}
+    except Exception as exc:
+        return {"ok": False, "message": str(exc)[:400]}
+
+
+@app.get("/api/ai/models")
+def ai_models():
+    cur = llm.current()
+    if cur["provider"] == "claude":
+        return {"models": list(config.CLAUDE_MODELS)}
+    try:
+        return {"models": llm.list_models(cur)}
+    except Exception as exc:
+        return {"models": [], "error": str(exc)[:300]}
 
 
 def _save_upload(upload: UploadFile, dest: Path) -> None:

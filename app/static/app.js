@@ -97,14 +97,15 @@ function refreshHints() {
   if (!$("go").disabled) $("go").textContent = goLabel();
   $("storyHint").textContent = settings.story_text.trim()
     ? `Your text: about ${Math.round(settings.story_text.trim().split(/\s+/).length / 2.5)} seconds when spoken. Length and theme are ignored.`
-    : cfg.status.api_key_set && settings.use_ai ? "Claude will write an original story for each video."
-    : "Without an API key, one of the built-in stories for this theme is used.";
-  const keyed = cfg.status.api_key_set;
-  $("aiHint").textContent = story ? (keyed && settings.use_ai ? `Stories are written by ${cfg.claude_models[cfg.status.model] || cfg.status.model}. The speech model below is used to time the captions to the voice.`
-      : "Built-in stories are used unless you paste your own text or add an API key under AI settings.")
+    : cfg.status.ai.ready && settings.use_ai ? `${cfg.status.ai.name} will write an original story for each video.`
+    : "Without an AI set up, one of the built-in stories for this theme is used.";
+  const keyed = cfg.status.ai.ready;
+  const aiLabel = `${cfg.status.ai.name} (${cfg.status.ai.model})`;
+  $("aiHint").textContent = story ? (keyed && settings.use_ai ? `Stories are written by ${aiLabel}. The speech model below is used to time the captions to the voice.`
+      : "Built-in stories are used unless you paste your own text or set up an AI under AI settings.")
     : !settings.use_ai ? "Moments are picked by offline scoring (keywords, pacing, clean endings)."
-    : keyed ? `Using ${cfg.claude_models[cfg.status.model] || cfg.status.model}.`
-    : "No API key saved yet, so offline scoring is used. Add a key under AI settings for much better picks and hooks.";
+    : keyed ? `Using ${aiLabel}.`
+    : "No AI is set up yet, so offline scoring is used. Open AI settings to connect a free, local or paid AI for much better picks and hooks.";
 }
 
 function pills() {
@@ -113,7 +114,7 @@ function pills() {
     [s.ffmpeg.found ? "FFmpeg ready" : "FFmpeg missing", s.ffmpeg.found ? "ok" : "bad"],
     [s.ffmpeg.libass ? "Captions ready" : "No caption support in FFmpeg", s.ffmpeg.libass ? "ok" : "bad"],
     [s.js_runtime.length ? "YouTube ready" : "YouTube: install Deno", s.js_runtime.length ? "ok" : "warn"],
-    [s.api_key_set ? "Claude connected" : "Offline mode (no API key)", s.api_key_set ? "ok" : "warn"],
+    [s.ai.ready ? `AI: ${s.ai.name}` : "Offline mode (no AI set up)", s.ai.ready ? "ok" : "warn"],
   ];
   $("pills").replaceChildren(...items.map(([text, cls]) => el("span", { className: "pill " + cls, textContent: text })));
 }
@@ -145,7 +146,6 @@ async function init() {
     el("option", { value: "none", textContent: "No hook text" }));
   $("whisper_model").replaceChildren(...Object.entries(cfg.whisper_models).map(([k, v]) => el("option", { value: k, textContent: v })));
   $("model").replaceChildren(...Object.entries(cfg.claude_models).map(([k, v]) => el("option", { value: k, textContent: v })));
-  $("model").value = cfg.status.model;
 
   for (const id of ["resolution", "fps", "quality", "caption_position", "hook_style", "whisper_model", "instructions"]) bind(id, id);
   bind("num_clips", "num_clips", "num", "numClipsVal");
@@ -174,22 +174,86 @@ async function init() {
     const r = await api(`/api/jobs/${currentJob}/open`, { method: "POST" });
     if (!r.ok) alert("Your clips are in:\n" + r.path);
   };
-  $("btnSettings").onclick = () => {
-    $("apiKey").value = "";
-    $("keyState").textContent = cfg.status.api_key_set ? "A key is saved. Leave the field empty to keep it." : "No key saved.";
-    $("settingsDlg").showModal();
-  };
-  $("settingsDlg").addEventListener("close", async () => {
-    if ($("settingsDlg").returnValue !== "save") return;
-    const body = { model: $("model").value };
-    if ($("apiKey").value.trim()) body.api_key = $("apiKey").value.trim();
-    cfg.status = await api("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    pills(); refreshHints();
-  });
+  aiSettings();
 
   const jobs = await loadHistory();
   const active = jobs.find((j) => j.status === "running" || j.status === "queued");
   if (active) watch(active.id);
+}
+
+// ---- AI provider settings ----------------------------------------------------
+let providers = {};
+
+function aiSettings() {
+  const prov = () => $("provider").value;
+  const show = () => {
+    const key = prov(), p = providers[key];
+    const claude = key === "claude", custom = key === "custom";
+    $("model").hidden = !claude;
+    $("modelText").hidden = claude;
+    $("urlRow").hidden = claude || !(custom || p.local);
+    $("keyRow").hidden = p.local;
+    $("loadModels").hidden = claude;
+    if (claude) $("model").value = p.model; else $("modelText").value = p.model;
+    $("baseUrl").value = p.base_url || "";
+    $("apiKey").value = "";
+    $("apiKey").placeholder = claude ? "sk-ant-..." : "paste the key here";
+    $("keyState").textContent = p.has_key ? "A key is saved. Leave the field empty to keep it." : "No key saved yet.";
+    $("modelList").replaceChildren();
+    $("testResult").textContent = "";
+    const hint = $("provHint");
+    hint.replaceChildren(claude ? "Best quality. Paid by usage, a few cents per video. "
+      : p.local ? "Runs on this PC: free, private, no limits. Needs the program installed and a model downloaded. Slower without a good graphics card. "
+      : custom ? "Any service with an OpenAI-compatible API. Enter its address, key and model name. "
+      : "Free within daily limits, no credit card. Your transcripts are sent to this provider. ");
+    if (p.key_url) hint.append(el("a", { href: p.key_url, target: "_blank", rel: "noopener", textContent: p.local ? "Download it here" : "Get a key here", style: "color:var(--accent)" }));
+  };
+  const collect = () => {
+    const key = prov();
+    const body = { provider: key, model: key === "claude" ? $("model").value : $("modelText").value.trim() };
+    if ($("apiKey").value.trim()) body.api_key = $("apiKey").value.trim();
+    if (key !== "claude") body.base_url = $("baseUrl").value.trim();
+    return body;
+  };
+  const saveNow = async () => {
+    cfg.status = await api("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(collect()) });
+    providers = await api("/api/ai/providers");
+    pills(); refreshHints();
+  };
+  $("provider").onchange = show;
+  $("btnSettings").onclick = async () => {
+    providers = await api("/api/ai/providers");
+    $("provider").replaceChildren(...Object.entries(providers).map(([k, v]) => el("option", { value: k, textContent: v.name })));
+    $("provider").value = cfg.status.ai.provider;
+    show();
+    $("settingsDlg").showModal();
+  };
+  $("closeSettings").onclick = () => $("settingsDlg").close();
+  $("saveSettings").onclick = async () => {
+    try { await saveNow(); $("settingsDlg").close(); } catch (err) { $("testResult").textContent = err.message; }
+  };
+  $("testAi").onclick = async () => {
+    $("testResult").textContent = "Testing...";
+    try {
+      await saveNow();
+      const r = await api("/api/ai/test", { method: "POST" });
+      $("testResult").textContent = (r.ok ? "Works. " : "Did not work. ") + r.message;
+      $("testResult").style.color = r.ok ? "var(--good)" : "var(--bad)";
+      $("keyState").textContent = providers[prov()].has_key ? "A key is saved. Leave the field empty to keep it." : "No key saved yet.";
+      $("apiKey").value = "";
+    } catch (err) { $("testResult").textContent = err.message; $("testResult").style.color = "var(--bad)"; }
+  };
+  $("loadModels").onclick = async () => {
+    $("testResult").style.color = "";
+    $("testResult").textContent = "Loading the model list...";
+    try {
+      await saveNow();
+      const r = await api("/api/ai/models");
+      $("modelList").replaceChildren(...r.models.map((m) => el("option", { value: m })));
+      $("testResult").textContent = r.error ? "Could not load models: " + r.error
+        : `${r.models.length} models found. Click the model field and start typing to pick one.`;
+    } catch (err) { $("testResult").textContent = err.message; }
+  };
 }
 
 function brandControls() {
@@ -358,10 +422,10 @@ function render(job) {
   $("remix").hidden = $("openFolder").hidden = busy;
   if (clips.length) {
     if (job.kind === "story") {
-      const how = { claude: "story by Claude", pasted: "your own text", builtin: "built-in story" }[job.engine] || "";
+      const how = { pasted: "your own text", builtin: "built-in story" }[job.engine] || (job.engine ? "story by " + job.engine : "");
       $("resultsTitle").textContent = `${clips.length} narrated video${clips.length > 1 ? "s" : ""}${how ? ", " + how : ""}`;
     } else {
-      const how = job.engine === "claude" ? "picked by Claude" : "picked by offline scoring";
+      const how = !job.engine || job.engine === "offline" ? "picked by offline scoring" : "picked by " + job.engine;
       $("resultsTitle").textContent = `${job.title || "Your video"}: ${clips.length} clip${clips.length > 1 ? "s" : ""}, ${how}`;
     }
     const box = $("clips");

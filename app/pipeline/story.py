@@ -8,6 +8,7 @@ from typing import Callable, List
 from pydantic import BaseModel
 
 from .. import config
+from . import llm
 
 THEMES = {
     "motivation": "Motivation: getting started and keeping going",
@@ -163,6 +164,27 @@ def write_with_claude(n: int, theme: str, tone: str, seconds: float, direction: 
     return [s.model_dump() for s in response.parsed_output.stories]
 
 
+STORY_SHAPE = """{"stories": [{"title": "...", "hook": "...", "script": "First paragraph.\\n\\nSecond paragraph.", \
+"description": "...", "hashtags": ["...", "..."], "emphasis_words": ["...", "..."], \
+"emojis": [{"word": "...", "emoji": "🌄"}]}]}"""
+
+
+def write_with_provider(n: int, theme: str, tone: str, seconds: float, direction: str,
+                        log: Callable[[str], None]) -> list[dict]:
+    """Story writing through a free or local provider."""
+    words = int(seconds * WORDS_PER_SECOND)
+    user = (f"Write {n} {'story' if n == 1 else 'different stories'}.\n"
+            f"Theme: {THEMES.get(theme, theme)}\nTone: {TONES.get(tone, tone)}\n"
+            f"Length: about {words} words each (roughly {seconds:.0f} seconds when spoken). "
+            f"Stay within ten percent of that word count.\n")
+    if direction.strip():
+        user += f"Extra direction from the creator: {direction.strip()}\n"
+    batch = llm.chat_json(SYSTEM_PROMPT, user, StoryBatch, STORY_SHAPE, log)
+    ai = llm.current()
+    log(f"{ai['name']} ({ai['model']}) wrote {len(batch.stories)} stories.")
+    return [s.model_dump() for s in batch.stories]
+
+
 def get_stories(n: int, settings: dict, log: Callable[[str], None]) -> tuple[list[dict], str]:
     """Return (stories, source) where source is 'pasted', 'claude' or 'builtin'."""
     pasted = _clean_script(settings.get("story_text", ""))
@@ -174,10 +196,12 @@ def get_stories(n: int, settings: dict, log: Callable[[str], None]) -> tuple[lis
                  "hashtags": _keywords(pasted, 4) + ["motivation"], "emphasis_words": _keywords(pasted), "emojis": []}
         return [dict(story) for _ in range(n)], "pasted"
 
-    if config.get_api_key() and settings.get("use_ai", True):
+    ai = llm.current()
+    if ai["ready"] and settings.get("use_ai", True):
         try:
-            stories = write_with_claude(n, theme, settings["story_tone"], float(settings["story_seconds"]),
-                                        settings.get("instructions", ""), log)
+            writer = write_with_claude if ai["provider"] == "claude" else write_with_provider
+            stories = writer(n, theme, settings["story_tone"], float(settings["story_seconds"]),
+                             settings.get("instructions", ""), log)
             for s in stories:
                 s["script"] = _clean_script(s["script"])
                 s["hashtags"] = [re.sub(r"[^A-Za-z0-9_]", "", h) for h in s["hashtags"] if h][:8]
@@ -185,11 +209,11 @@ def get_stories(n: int, settings: dict, log: Callable[[str], None]) -> tuple[lis
             if stories:
                 while len(stories) < n:
                     stories.append(dict(stories[len(stories) % len(stories)]))
-                return stories[:n], "claude"
+                return stories[:n], ai["name"]
         except Exception as exc:
-            log(f"Claude could not write the story ({type(exc).__name__}: {exc}). Using a built-in story instead.")
+            log(f"{ai['name']} could not write the story ({type(exc).__name__}: {exc}). Using a built-in story instead.")
     else:
-        log("No Anthropic API key is set and no text was pasted, so built-in stories are used.")
+        log("No AI is set up and no text was pasted, so built-in stories are used.")
 
     order = ([theme] if theme in BUILTIN else []) + [k for k in BUILTIN if k != theme]
     stories = []

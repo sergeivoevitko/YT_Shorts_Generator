@@ -56,18 +56,26 @@ Upload a music file under Edits and it is lowered automatically whenever the nar
 a soft ambient sound can be added instead.
 
 The first run downloads the voice model (about 350 MB, one time). No account or key is needed for the voice.
-Stories are written by Claude when an API key is set; without one, a built-in story for the chosen theme is used.
+Stories are written by the AI chosen under AI settings; without one, a built-in story for the chosen theme is used.
 
-## Turning on Claude (recommended)
+## Turning on the AI
 
-Without an API key the app picks moments with simple offline scoring. With one, Claude reads the whole
-transcript, chooses the moments, and writes the hooks, titles and captions, which is a large quality step up.
+Without an AI the app picks moments with simple offline scoring and uses built-in stories. With one, the AI
+reads the whole transcript, chooses the moments, and writes the hooks, titles, captions and stories, which is
+a large quality step up. Press **AI settings** and choose a provider:
 
-1. Create a key at https://console.anthropic.com.
-2. In the app, press **AI settings**, paste the key, and save. It is stored only in `workspace/settings.json`
-   on your computer.
+| Provider | Cost | Notes |
+| --- | --- | --- |
+| Google Gemini, Groq, Cerebras, OpenRouter, Mistral | Free within daily limits | Create a free account, press "Get a key here" in the settings window, paste the key |
+| Ollama, LM Studio | Free, no limits | Runs on your own PC; install the program and download a model first. Slow without a good graphics card |
+| Claude | Paid by usage (a few cents per video) | Best quality. Key from https://console.anthropic.com |
+| Other | Depends | Any service with an OpenAI-compatible API |
 
-Cost is typically a few cents per video and depends on video length and the model you choose.
+Use **Show available models** to see what the provider currently offers (model names change over time), and
+**Save and test** to check that the key works. Keys are stored only in `workspace/settings.json` on your computer.
+
+Free tiers accept less text per request, so long videos are analyzed in several parts. With the cloud providers
+your transcripts are sent to that provider; with Ollama or LM Studio nothing leaves your PC.
 
 ## What the edits do
 

@@ -12,7 +12,7 @@ import uuid
 from pathlib import Path
 
 from . import config
-from .pipeline import analyze, captions, download, footage, reframe, render, story, transcribe, voice
+from .pipeline import analyze, captions, download, footage, llm, reframe, render, story, transcribe, voice
 
 DEFAULTS = {
     "aspect": "9:16", "resolution": "1080p", "fps": 30, "quality": "balanced",
@@ -468,11 +468,12 @@ class JobManager:
 
         # 3. Find the moments ----------------------------------------------
         up = stage("analyze")
-        up(0.1, "Finding the best moments" + (" with Claude" if s["use_ai"] and config.get_api_key() else ""))
+        ai = llm.current()
+        up(0.1, "Finding the best moments" + (f" with {ai['name']}" if s["use_ai"] and ai["ready"] else ""))
         plans, engine = analyze.analyze(sentences, meta["title"], s["num_clips"], s["min_len"], s["max_len"],
                                         s["use_ai"], s["instructions"], log)
         job.engine = engine
-        log(f"Selected {len(plans)} clips using {'Claude' if engine == 'claude' else 'offline scoring'}.")
+        log(f"Selected {len(plans)} clips using {'offline scoring' if engine == 'offline' else engine}.")
         (job.dir / "plan.json").write_text(json.dumps(plans, indent=2), encoding="utf-8")
 
         # 4. Render ---------------------------------------------------------

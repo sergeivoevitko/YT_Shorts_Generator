@@ -7,6 +7,7 @@ from typing import Callable, List
 from pydantic import BaseModel
 
 from .. import config
+from . import llm
 
 SYSTEM_PROMPT = """You are a senior short-form video editor who has cut thousands of high-retention \
 TikToks, Reels and YouTube Shorts out of long videos.
@@ -125,6 +126,47 @@ def analyze_with_claude(sentences: list[dict], title: str, n: int, min_len: floa
     log(f"Claude ({response.model}) proposed {len(plan.clips)} clips "
         f"[{usage.input_tokens} tokens in, {usage.output_tokens} out].")
     return [c.model_dump() for c in plan.clips]
+
+
+CLIP_SHAPE = """{"clips": [{"start_sentence": 12, "end_sentence": 19, "title": "...", "hook": "...", \
+"description": "...", "hashtags": ["...", "..."], "emphasis_words": ["...", "..."], \
+"emojis": [{"word": "...", "emoji": "🔥"}], "hook_score": 80, "flow_score": 70, "value_score": 75, \
+"trend_score": 60, "score": 74, "reason": "..."}]}"""
+
+
+def analyze_with_provider(sentences: list[dict], title: str, n: int, min_len: float, max_len: float,
+                          instructions: str, log: Callable[[str], None]) -> list[dict]:
+    """Same task through a free or local provider. Long transcripts are sent in parts,
+    because free tiers and local models accept much less text per request than Claude."""
+    ai = llm.current()
+    chunks: list[list[dict]] = [[]]
+    size = 0
+    for s in sentences:
+        line = len(s["text"]) + 24
+        if chunks[-1] and size + line > ai["chunk"]:
+            # Overlap a little so a moment that straddles the boundary is not lost.
+            chunks.append(chunks[-1][-6:])
+            size = sum(len(x["text"]) + 24 for x in chunks[-1])
+        chunks[-1].append(s)
+        size += line
+    per_chunk = n if len(chunks) == 1 else max(1, -(-n * 3 // (2 * len(chunks))))
+    found: list[dict] = []
+    for i, part in enumerate(chunks, start=1):
+        user = (f"Video title: {title}\nNumber of clips wanted: {per_chunk}\n"
+                f"Each clip must last between {min_len:.0f} and {max_len:.0f} seconds.\n")
+        if len(chunks) > 1:
+            user += f"This is part {i} of {len(chunks)} of the transcript. Only use sentence numbers that appear below.\n"
+        if instructions.strip():
+            user += f"Extra direction from the creator: {instructions.strip()}\n"
+        user += f"\nTranscript:\n{_transcript_text(part)}"
+        plan = llm.chat_json(SYSTEM_PROMPT, user, VideoPlan, CLIP_SHAPE, log)
+        lo, hi = part[0]["i"], part[-1]["i"]
+        found += [c.model_dump() for c in plan.clips if lo <= c.start_sentence <= c.end_sentence <= hi]
+        if len(chunks) > 1:
+            log(f"{ai['name']}: part {i} of {len(chunks)} analyzed, {len(plan.clips)} candidates.")
+    found.sort(key=lambda c: -c["score"])
+    log(f"{ai['name']} ({ai['model']}) proposed {len(found)} clips.")
+    return found
 
 
 # ---------------------------------------------------------------------------
@@ -266,14 +308,18 @@ def analyze(sentences: list[dict], title: str, n: int, min_len: float, max_len: 
         raise RuntimeError("No speech was found in this video, so there is nothing to clip.")
     clips: list[dict] = []
     engine = "offline"
-    if use_ai and config.get_api_key():
+    ai = llm.current()
+    if use_ai and ai["ready"]:
         try:
-            clips = analyze_with_claude(sentences, title, n, min_len, max_len, instructions, log)
-            engine = "claude"
+            if ai["provider"] == "claude":
+                clips = analyze_with_claude(sentences, title, n, min_len, max_len, instructions, log)
+            else:
+                clips = analyze_with_provider(sentences, title, n, min_len, max_len, instructions, log)
+            engine = ai["name"]
         except Exception as exc:
-            log(f"Claude analysis failed ({type(exc).__name__}: {exc}). Using offline scoring instead.")
+            log(f"{ai['name']} analysis failed ({type(exc).__name__}: {exc}). Using offline scoring instead.")
     elif use_ai:
-        log("No Anthropic API key is set, so moments are picked by offline scoring.")
+        log("No AI is set up (see AI settings), so moments are picked by offline scoring.")
 
     fitted: list[dict] = []
     used: list[tuple[int, int]] = []
