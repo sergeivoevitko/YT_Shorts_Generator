@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import config, tracker
 from .jobs import DEFAULTS, JobManager, new_id
-from .pipeline import captions, llm, render, story, transcribe, voice
+from .pipeline import captions, compile as comp, llm, render, story, transcribe, voice
 
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")           # two math libraries in one process must not abort it
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")  # harmless Windows notice, hides real messages
@@ -48,6 +48,8 @@ def get_config():
         "claude_models": config.CLAUDE_MODELS,
         "fonts": captions.FONTS,
         "platforms": captions.PLATFORMS,
+        "comp_themes": {k: v[0] for k, v in comp.THEMES.items()},
+        "comp_styles": comp.STYLES,
         "voices": voice.VOICES,
         "story_themes": story.THEMES,
         "story_tones": story.TONES,
@@ -230,7 +232,7 @@ def _save_upload(upload: UploadFile, dest: Path) -> None:
 @app.post("/api/jobs")
 def create_job(url: str = Form(""), settings: str = Form("{}"), reuse: str = Form(""), mode: str = Form("clips"),
                video: UploadFile | None = File(None), music: UploadFile | None = File(None),
-               footage: list[UploadFile] = File([])):
+               footage: list[UploadFile] = File([]), urls: str = Form("")):
     try:
         opts = json.loads(settings)
     except ValueError:
@@ -242,7 +244,35 @@ def create_job(url: str = Form(""), settings: str = Form("{}"), reuse: str = For
     url = url.strip()
 
     old = manager.get(reuse) if reuse else None
-    if mode == "story" or (old and old.source.get("kind") == "story"):
+    if mode == "compilation" or (old and old.source.get("kind") == "compilation"):
+        if old:
+            root = old.source.get("reuse") or old.id
+            if not (config.JOBS_DIR / root / "sources.json").exists():
+                raise HTTPException(400, "The earlier run's videos are no longer available. Start again from the links.")
+            source = {"kind": "compilation", "items": old.source.get("items", []), "reuse": root, "title": "Compilation"}
+            if old.source.get("music") and Path(old.source["music"]).exists():
+                source["music"] = old.source["music"]
+        else:
+            items = []
+            for line in re.split(r"[\s,]+", urls.strip()):
+                if not line:
+                    continue
+                if not re.match(r"^https?://", line):
+                    raise HTTPException(400, f"'{line[:60]}' is not a full link. Each link must start with http:// or https://")
+                items.append({"url": line})
+            for i, up in enumerate(f for f in footage if f.filename):
+                ext = Path(up.filename).suffix.lower()
+                if ext not in VIDEO_EXT:
+                    raise HTTPException(400, f"Unsupported video type '{ext}' ({up.filename}).")
+                dest = job_dir / f"upload_{i + 1:02d}{ext}"
+                _save_upload(up, dest)
+                items.append({"file": str(dest), "title": Path(up.filename).stem})
+            if not items:
+                raise HTTPException(400, "Add at least one video link or file.")
+            if len(items) > 12:
+                raise HTTPException(400, "Use at most 12 videos per compilation.")
+            source = {"kind": "compilation", "items": items, "title": "Compilation"}
+    elif mode == "story" or (old and old.source.get("kind") == "story"):
         if old:
             files = [f for f in old.source.get("files", []) if Path(f).exists()]
             if not files:
@@ -311,7 +341,7 @@ def get_job(job_id: str):
 @app.post("/api/jobs/{job_id}/render")
 def render_selected(job_id: str, payload: dict):
     picks = payload.get("picks") if isinstance(payload.get("picks"), list) else []
-    if not manager.render_selected(job_id, picks):
+    if not manager.render_selected(job_id, picks, str(payload.get("title") or "")):
         raise HTTPException(409, "This run is not waiting for a selection, or nothing was selected.")
     return manager.get(job_id).to_dict()
 

@@ -12,7 +12,7 @@ import uuid
 from pathlib import Path
 
 from . import config, tracker
-from .pipeline import analyze, captions, download, footage, llm, reframe, render, story, transcribe, voice
+from .pipeline import analyze, captions, compile as comp, download, footage, llm, reframe, render, story, transcribe, voice
 
 DEFAULTS = {
     "aspect": "9:16", "resolution": "1080p", "fps": "source", "quality": "balanced", "encoder": "auto",
@@ -32,6 +32,8 @@ DEFAULTS = {
     "footage_order": "upload", "ambient_pad": True,
     "whisper_model": "small.en", "speech_engine": "local", "use_ai": True, "instructions": "",
     "review_picks": True,
+    # Compilation mode
+    "comp_theme": "best", "comp_theme_text": "", "comp_style": "countdown", "comp_seconds": 120, "comp_intro": True,
     "cold_open": True, "header": True, "header_text": "", "ab_versions": False, "platform": "universal",
 }
 
@@ -52,6 +54,11 @@ def clean_settings(raw: dict) -> dict:
     s["aspect"] = s["aspect"] if s["aspect"] in render.ASPECTS else "9:16"
     s["resolution"] = s["resolution"] if s["resolution"] in render.RESOLUTIONS else "1080p"
     s["quality"] = s["quality"] if s["quality"] in render.QUALITY else "balanced"
+    s["comp_theme"] = s["comp_theme"] if s["comp_theme"] in comp.THEMES else "best"
+    s["comp_theme_text"] = str(s["comp_theme_text"])[:200]
+    s["comp_style"] = s["comp_style"] if s["comp_style"] in comp.STYLES else "countdown"
+    s["comp_seconds"] = _num(s["comp_seconds"], 30, 300, 120)
+    s["comp_intro"] = bool(s["comp_intro"])
     s["platform"] = s["platform"] if s["platform"] in captions.SAFE_ZONES else "universal"
     s["header_text"] = str(s["header_text"])[:44]
     s["speech_engine"] = "groq" if s["speech_engine"] == "groq" else "local"
@@ -111,6 +118,7 @@ class Job:
         self.engine = ""
         self.clips: list[dict] = []
         self.candidates: list[dict] = []   # moments waiting for the user's choice (status "review")
+        self.comp_title = ""               # suggested on-screen title of a compilation
         self.log: list[str] = []
         self.created = time.time()
         self.finished = 0.0
@@ -125,7 +133,8 @@ class Job:
         }
         if full:
             data.update({"settings": self.settings, "clips": self.clips, "log": self.log[-200:],
-                         "candidates": self.candidates if self.status == "review" else []})
+                         "candidates": self.candidates if self.status == "review" else [],
+                         "comp_title": self.comp_title})
         return data
 
     def save(self) -> None:
@@ -153,7 +162,7 @@ class JobManager:
                 data = json.loads(path.read_text(encoding="utf-8"))
                 job = Job(data["id"], data.get("source", {}), data.get("settings", {}))
                 for key in ("status", "stage", "progress", "message", "error", "title", "engine", "clips",
-                            "log", "created", "finished", "candidates"):
+                            "log", "created", "finished", "candidates", "comp_title"):
                     setattr(job, key, data.get(key, getattr(job, key)))
                 if job.status in ("queued", "running"):
                     job.status, job.message = "error", "Interrupted when the app was closed"
@@ -182,14 +191,14 @@ class JobManager:
         self.queue.put((job.id, {"index": index, "edit": edit}))
         return True
 
-    def render_selected(self, job_id: str, picks: list[dict]) -> bool:
+    def render_selected(self, job_id: str, picks: list[dict], title: str = "") -> bool:
         """Continue a job that is waiting for the user's choice of moments."""
         job = self.jobs.get(job_id)
         if not job or job.status != "review" or not picks:
             return False
         job.status, job.error, job.cancel_flag = "queued", "", False
         job.message = "Waiting to render your selection"
-        self.queue.put((job.id, {"render": picks}))
+        self.queue.put((job.id, {"render": picks, "title": title}))
         return True
 
     def get(self, job_id: str) -> Job | None:
@@ -215,7 +224,7 @@ class JobManager:
         # Keep the folder if a later job reuses this one's download and transcript.
         if any(j.source.get("reuse") == job_id for j in self.jobs.values()):
             for p in job.dir.glob("*"):
-                if p.suffix in (".mp4", ".jpg") and not p.name.startswith("source"):
+                if p.suffix in (".mp4", ".jpg") and not p.name.startswith(("source", "upload_")):
                     p.unlink(missing_ok=True)
         else:
             shutil.rmtree(job.dir, ignore_errors=True)
@@ -233,12 +242,16 @@ class JobManager:
             job.status = "running"
             try:
                 paused = False
-                if task and "render" in task:
+                if task and "render" in task and job.source.get("kind") == "compilation":
+                    self._compile_selected(job, task["render"], task.get("title", ""))
+                elif task and "render" in task:
                     self._run_selected(job, task["render"])
                 elif task:
                     self._run_clip(job, task["index"], task["edit"])
                 elif job.source.get("kind") == "story":
                     self._run_story(job)
+                elif job.source.get("kind") == "compilation":
+                    paused = self._run_compilation(job) == "review"
                 else:
                     paused = self._run(job) == "review"
                 if paused:
@@ -455,6 +468,248 @@ class JobManager:
             return update
         return log, stage
 
+    # ------------------------------------------------------------------ compilation
+    def _run_compilation(self, job: Job) -> str | None:
+        """Download and analyse every source, then propose moments for one joined video."""
+        s = job.settings
+        cancelled = lambda: job.cancel_flag
+        log, stage = self._helpers(job)
+        caps = config.ffmpeg_capabilities()
+        if not caps["found"]:
+            raise RuntimeError("FFmpeg was not found. Run install.bat again or install FFmpeg and restart the app.")
+        if not caps["libass"]:
+            raise RuntimeError("This FFmpeg build cannot draw text (libass is missing). "
+                               "Install the full FFmpeg build (winget install Gyan.FFmpeg) and restart.")
+        root = self._source_dir(job)
+        items = job.source.get("items") or []
+        n_src = len(items)
+        if not n_src:
+            raise RuntimeError("Add at least one video link or file.")
+
+        # 1. Sources ---------------------------------------------------------
+        up = stage("download")
+        sources_file = root / "sources.json"
+        sources = json.loads(sources_file.read_text(encoding="utf-8")) if sources_file.exists() else []
+        if len(sources) != n_src:
+            sources = []
+            for k, item in enumerate(items):
+                part = lambda p, msg, k=k: up((k + p) / n_src, f"{msg} (video {k + 1} of {n_src})")
+                if item.get("file"):
+                    meta = {"path": item["file"], "title": item.get("title") or f"Video {k + 1}", "url": ""}
+                else:
+                    part(0.0, "Starting download")
+                    short = render.RESOLUTIONS[s["resolution"]]
+                    try:
+                        meta = download.download(item["url"], job.dir / f"src{k + 1:02d}", 1080 if short <= 1080 else 2160,
+                                                 part, cancelled)
+                    except Exception as exc:
+                        if job.cancel_flag:
+                            raise
+                        log(f"Skipped video {k + 1} ({item['url']}): {exc}")
+                        continue
+                try:
+                    meta.update(reframe.probe(meta["path"]))
+                except Exception as exc:
+                    log(f"Skipped video {k + 1}: {exc}")
+                    continue
+                sources.append(meta)
+                log(f"Source {len(sources)}: {meta['title']} ({meta['duration'] / 60:.1f} min)")
+            if not sources:
+                raise RuntimeError("None of the videos could be downloaded or read.")
+            sources_file.write_text(json.dumps(sources, indent=2), encoding="utf-8")
+        else:
+            log("Reusing the downloaded videos from the earlier run.")
+        job.title = comp.theme_direction(s)[0]
+        job.save()
+
+        # 2. Transcripts -------------------------------------------------------
+        up = stage("transcribe")
+        transcripts = []
+        for k, meta in enumerate(sources):
+            tpath = root / f"src{k + 1:02d}.transcript.{s['whisper_model']}.json"
+            if tpath.exists():
+                transcripts.append(json.loads(tpath.read_text(encoding="utf-8")))
+                continue
+            if not meta.get("has_audio", True):
+                transcripts.append({"words": [], "sentences": []})
+                continue
+            part = lambda p, msg, k=k: up((k + p) / len(sources), f"{msg} (video {k + 1} of {len(sources)})")
+            t = transcribe.transcribe(meta["path"], s["whisper_model"], part, cancelled, meta["duration"], s["speech_engine"])
+            tpath.write_text(json.dumps(t), encoding="utf-8")
+            transcripts.append(t)
+            log(f"Source {k + 1}: transcribed {len(t['words'])} words.")
+
+        # 3. Moments -----------------------------------------------------------
+        up = stage("analyze")
+        name, direction = comp.theme_direction(s)
+        target = float(s["comp_seconds"])
+        max_len = max(12.0, min(30.0, target / 3))
+        min_len = 5.0 if target <= 60 else 7.0
+        wanted = max(3, min(18, int(round(target / ((min_len + max_len) / 2)))))
+        per_source = max(2, min(10, -(-int(wanted * 1.7) // len(sources)) + 1))
+        candidates: list[dict] = []
+        engine = "offline"
+        for k, (meta, t) in enumerate(zip(sources, transcripts)):
+            up(k / len(sources), f"Finding moments for '{name}' (video {k + 1} of {len(sources)})")
+            if not t["sentences"]:
+                log(f"Source {k + 1} has no speech, skipped.")
+                continue
+            try:
+                loud = comp.loud_sentences(meta["path"], t["sentences"])
+            except Exception:
+                loud = set()
+            for sent in t["sentences"]:
+                sent["loud"] = sent["i"] in loud
+            if loud:
+                log(f"Source {k + 1}: {len(loud)} loud reactions marked for the AI.")
+            extra = (s["instructions"] + "\n" + direction).strip()
+            try:
+                plans, eng = analyze.analyze(t["sentences"], meta["title"], per_source, min_len, max_len,
+                                             s["use_ai"], extra, log, per_source)
+            except RuntimeError as exc:
+                log(f"Source {k + 1}: {exc}")
+                continue
+            if eng != "offline":
+                engine = eng
+            for p in plans:
+                p["src"] = k
+                p["source_title"] = meta["title"]
+                p["text"] = " ".join(w["w"] for w in t["words"][p["w0"]:p["w1"] + 1])[:420]
+            candidates += plans
+        if not candidates:
+            raise RuntimeError("No usable moments were found in these videos.")
+        job.engine = engine
+        candidates.sort(key=lambda p: -p["score"])
+        # Tick the best ones until the target length is filled.
+        used = 0.0
+        for p in candidates:
+            p["selected"] = used < target * 0.9
+            if p["selected"]:
+                used += p["end"] - p["start"]
+        if s["comp_style"] == "countdown":  # show weakest first, so the best plays last
+            candidates.sort(key=lambda p: (not p["selected"], p["score"]))
+        else:
+            candidates.sort(key=lambda p: (not p["selected"], -p["score"]))
+        (job.dir / "candidates.json").write_text(json.dumps(candidates, indent=2), encoding="utf-8")
+        log(f"Found {len(candidates)} moments in {len(sources)} videos using "
+            f"{'offline scoring' if engine == 'offline' else engine}.")
+        n_sel = sum(1 for p in candidates if p["selected"])
+        job.candidates = [{
+            "index": i, "title": p["title"], "titles": p.get("titles") or [p["title"]], "hook": "", "hooks": [],
+            "score": p.get("score", 0), "scores": p.get("scores") or {}, "reason": p.get("reason", ""),
+            "start": round(p["start"], 1), "end": round(p["end"], 1), "duration": round(p["end"] - p["start"], 1),
+            "text": p["text"], "teaser": "", "selected": p["selected"], "source": p["source_title"],
+        } for i, p in enumerate(candidates, start=1)]
+        job.comp_title = comp.default_title(s, n_sel)
+        if s["review_picks"]:
+            job.progress = 0.48
+            return "review"
+        picks = [{"index": c["index"]} for c in job.candidates if c["selected"]]
+        self._compile_selected(job, picks, job.comp_title)
+        return None
+
+    def _compile_selected(self, job: Job, picks: list[dict], title: str) -> None:
+        s = job.settings
+        cancelled = lambda: job.cancel_flag
+        log, stage = self._helpers(job)
+        root = self._source_dir(job)
+        sources = json.loads((root / "sources.json").read_text(encoding="utf-8"))
+        candidates = json.loads((job.dir / "candidates.json").read_text(encoding="utf-8"))
+        words_by_src: dict[int, list[dict]] = {}
+        chosen = []
+        for pick in picks:
+            idx = int(pick.get("index", 0))
+            if 1 <= idx <= len(candidates):
+                plan = dict(candidates[idx - 1])
+                if str(pick.get("title") or "").strip():
+                    plan["title"] = str(pick["title"]).strip()[:80]
+                chosen.append(plan)
+        if not chosen:
+            raise RuntimeError("No moments were selected.")
+        title = (title or "").strip()[:80] or comp.default_title(s, len(chosen))
+        job.title = title
+        job.candidates = []
+        log(f"Building '{title}' from {len(chosen)} moments.")
+
+        # One frame rate for everything, or the pieces cannot be joined.
+        rates = {round(sources[p["src"]].get("fps", 30.0), 2) for p in chosen}
+        fps, fps_s = render.resolve_fps(s["fps"] if len(rates) == 1 else "30", sources[chosen[0]["src"]].get("fps", 30.0))
+        base = dict(s, hook_style="none", progress_bar=False, emojis=False, header=False, cold_open=False, sfx=False,
+                    logo_enabled=False, handle_text="", fps=fps_s if fps_s in ("30", "60") else s["fps"])
+        if len(rates) > 1:
+            base["fps"] = "30"
+
+        up = stage("render")
+        fonts = job.dir / "fonts"
+        if not fonts.exists():
+            shutil.copytree(config.FONTS_DIR, fonts)
+        if s.get("logo_enabled") and not s.get("logo_path"):
+            logo = config.WORKSPACE / "brand" / "logo.png"
+            if logo.exists():
+                shutil.copy(logo, job.dir / "logo.png")
+                s["logo_path"] = str(job.dir / "logo.png")
+        style = None if s["caption_style"] == "none" else (captions.MIX_ORDER[0] if s["caption_style"] == "mix" else s["caption_style"])
+
+        def words_of(k: int) -> list[dict]:
+            if k not in words_by_src:
+                path = root / f"src{k + 1:02d}.transcript.{s['whisper_model']}.json"
+                words_by_src[k] = json.loads(path.read_text(encoding="utf-8"))["words"]
+            return words_by_src[k]
+
+        total_steps = len(chosen) + 2
+        moments, made = [], []
+        try:
+            for i, plan in enumerate(chosen, start=1):
+                meta = sources[plan["src"]]
+                res = render.render_clip(
+                    meta["path"], meta, dict(plan, title=f"moment-{i}"), words_of(plan["src"]), base, job.dir, 100 + i,
+                    style, None, lambda p, msg, i=i: up((i - 1 + p) / total_steps, f"Preparing moment {i} of {len(chosen)}"),
+                    cancelled, lambda m: None, intermediate=True)
+                made += [res["file"], res["thumb"]]
+                number = f"#{len(chosen) - i + 1}" if s["comp_style"] == "countdown" else ""
+                moments.append({"file": res["file"], "title": plan["title"], "number": number})
+
+            # Intro: two to three seconds from the best moment, with the title over it.
+            teaser = None
+            if s["comp_intro"] and len(chosen) > 1:
+                best = max(chosen, key=lambda p: p.get("score", 0))
+                w = words_of(best["src"])
+                a = best.get("teaser_w0") if best.get("teaser_w0") is not None else best["w0"] + (best["w1"] - best["w0"]) // 2
+                b = a
+                while b < best["w1"] and w[b + 1]["e"] - w[a]["s"] <= 3.0:
+                    b += 1
+                if w[b]["e"] - w[a]["s"] >= 1.0:
+                    quiet = dict(base, remove_silence=False, remove_fillers=False, zooms=False)
+                    res = render.render_clip(
+                        sources[best["src"]]["path"], sources[best["src"]], dict(best, w0=a, w1=b, title="intro"), w,
+                        quiet, job.dir, 100, style, None,
+                        lambda p, msg: up((len(chosen) + p) / total_steps, "Preparing the intro"), cancelled,
+                        lambda m: None, intermediate=True)
+                    made += [res["file"], res["thumb"]]
+                    teaser = res["file"]
+
+            out = comp.assemble(job.dir, moments, teaser, title, dict(s, fps=base["fps"]), job.source.get("music"), fps_s,
+                                lambda p, msg: up((len(chosen) + 1 + p) / total_steps, msg), cancelled, log)
+        finally:
+            for name in made:
+                (job.dir / name).unlink(missing_ok=True)
+            shutil.rmtree(fonts, ignore_errors=True)
+        tags = []
+        for p in chosen:
+            tags += [h for h in p.get("hashtags", []) if h and h not in tags]
+        job.clips = [{
+            "index": 1, "kind": "compilation", "file": out["file"], "thumb": out["thumb"], "duration": out["duration"],
+            "source_start": 0, "source_end": 0, "style": style, "width": out["width"], "height": out["height"],
+            "fps": round(fps, 2), "title": title, "hook": "",
+            "description": f"{title}.",
+            "hashtags": tags[:5], "score": 0, "reason": "", "scores": {}, "variant": "", "cold_open": bool(teaser),
+            "hook_type": "", "engine": job.engine, "chapters": out["chapters"],
+            "transcript": " | ".join(out["chapters"]),
+        }]
+        log(f"Compilation rendered: {out['duration']:.0f}s, {len(chosen)} moments"
+            + (", with intro" if teaser else "") + ".")
+        _write_post_text(job)
+
     def _run_selected(self, job: Job, picks: list[dict]) -> None:
         """Render the moments the user ticked in the review step."""
         log, stage = self._helpers(job)
@@ -620,6 +875,9 @@ def _write_post_text(job: Job) -> None:
         tags = " ".join("#" + h for h in c["hashtags"])
         lines += [f"=== {c['file']}  ({c['duration']}s) ===", f"Title: {c['title']}",
                   f"Hook: {c['hook']}", f"Caption: {c['description']} {tags}".rstrip()]
+        if c.get("kind") == "compilation":
+            lines += ["Chapters (paste into the description):"] + c.get("chapters", []) + [""]
+            continue
         lines += [f"Script: {c['transcript']}", ""] if c.get("kind") == "story" else [f"Score: {c['score']}. {c['reason']}", ""]
     (job.dir / "post_text.txt").write_text("\n".join(lines), encoding="utf-8")
 

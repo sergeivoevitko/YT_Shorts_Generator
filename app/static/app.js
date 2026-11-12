@@ -26,7 +26,7 @@ const REFRAME = {
 };
 const STAGES = [["download", "Download"], ["transcribe", "Transcribe"], ["analyze", "Find moments"], ["review", "Your choice"], ["render", "Edit + render"]];
 const STORY_STAGES = [["footage", "Review footage"], ["story", "Write story"], ["voice", "Voiceover"], ["render", "Edit + render"]];
-const MODES = [["clips", "YouTube to shorts"], ["story", "My footage + story"]];
+const MODES = [["clips", "YouTube to shorts"], ["story", "My footage + story"], ["comp", "Compilation"]];
 const RES_SHORT = { "720p": 720, "1080p": 1080, "1440p": 1440, "4k": 2160 };
 
 function save() { localStorage.setItem("clipforge.settings", JSON.stringify(settings)); }
@@ -89,6 +89,7 @@ function refreshHints() {
   $("sizeHint").textContent = `${w} x ${h} pixels. ${ASPECT_NOTE[settings.aspect]}.` +
     (short > 1080 ? " Sizes above 1080p are upscaled unless the source video is that sharp, and render much slower." : "");
   const story = settings.mode === "story";
+  $("compCustomRow").hidden = settings.comp_theme !== "custom";
   const cloud = settings.speech_engine === "groq";
   $("whisperRow").hidden = cloud;
   $("speechHint").textContent = cloud
@@ -146,6 +147,14 @@ async function init() {
   bind("num_videos", "num_videos", "num", "numVideosVal");
   bind("voice_speed", "voice_speed", "num", "voiceSpeedVal", (v) => Math.round(v * 100) + "%");
   bind("ambient_pad", "ambient_pad", "check");
+  options("comp_theme", cfg.comp_themes); options("comp_style", cfg.comp_styles);
+  for (const id of ["comp_theme", "comp_style", "comp_theme_text"]) bind(id, id);
+  bind("comp_seconds", "comp_seconds", "num", "compSecVal", (v) => v < 60 ? `about ${v} seconds` : `about ${Math.floor(v / 60)} min${v % 60 ? " " + (v % 60) + " s" : ""}`);
+  bind("comp_intro", "comp_intro", "check");
+  $("compFiles").onchange = () => {
+    const files = [...$("compFiles").files];
+    $("compFilesName").textContent = files.length ? `${files.length} file${files.length > 1 ? "s" : ""} selected (${(files.reduce((a, f) => a + f.size, 0) / 1e6).toFixed(0)} MB)` : "Up to 12 videos in total";
+  };
   $("footage").onchange = () => {
     const files = [...$("footage").files];
     const mb = files.reduce((a, f) => a + f.size, 0) / 1e6;
@@ -195,7 +204,7 @@ async function init() {
       });
     if (!picks.length) { alert("Tick at least one moment."); return; }
     try {
-      await api(`/api/jobs/${currentJob}/render`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ picks }) });
+      await api(`/api/jobs/${currentJob}/render`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ picks, title: $("compTitle").value.trim() }) });
       watch(currentJob);
     } catch (err) { alert(err.message); }
   };
@@ -479,7 +488,7 @@ function fileInput(id, nameId, clearId, placeholder) {
   $(clearId).onclick = () => { $(id).value = ""; $(id).onchange(); };
 }
 
-function goLabel() { return settings.mode === "story" ? "Generate narrated video" : "Generate shorts"; }
+function goLabel() { return settings.mode === "story" ? "Generate narrated video" : settings.mode === "comp" ? "Find moments for the compilation" : "Generate shorts"; }
 
 async function submit(reuse) {
   $("formError").textContent = "";
@@ -487,6 +496,13 @@ async function submit(reuse) {
   form.append("settings", JSON.stringify(settings));
   if (reuse) {
     form.append("reuse", currentJob);
+  } else if (settings.mode === "comp") {
+    const files = [...$("compFiles").files];
+    const urls = $("compUrls").value.trim();
+    if (!files.length && !urls) { $("formError").textContent = "Add at least one video link or file first."; return; }
+    form.append("mode", "compilation");
+    form.append("urls", urls);
+    for (const f of files) form.append("footage", f);
   } else if (settings.mode === "story") {
     const files = [...$("footage").files];
     if (!files.length) { $("formError").textContent = "Choose at least one video clip of your footage first."; return; }
@@ -503,7 +519,7 @@ async function submit(reuse) {
   }
   if ($("music").files[0]) form.append("music", $("music").files[0]);
   $("go").disabled = true;
-  $("go").textContent = !reuse && (settings.mode === "story" || $("video").files[0]) ? "Uploading..." : "Starting...";
+  $("go").textContent = !reuse && (settings.mode === "story" || (settings.mode === "comp" && $("compFiles").files.length) || $("video").files[0]) ? "Uploading..." : "Starting...";
   try {
     const job = await api("/api/jobs", { method: "POST", body: form });
     watch(job.id);
@@ -557,7 +573,9 @@ function render(job) {
   $("results").hidden = clips.length === 0;
   $("remix").hidden = $("openFolder").hidden = busy;
   if (clips.length) {
-    if (job.kind === "story") {
+    if (job.kind === "compilation") {
+      $("resultsTitle").textContent = `Compilation ready, moments ${!job.engine || job.engine === "offline" ? "picked by offline scoring" : "picked by " + job.engine}`;
+    } else if (job.kind === "story") {
       const how = { pasted: "your own text", builtin: "built-in story" }[job.engine] || (job.engine ? "story by " + job.engine : "");
       $("resultsTitle").textContent = `${clips.length} narrated video${clips.length > 1 ? "s" : ""}${how ? ", " + how : ""}`;
     } else {
@@ -578,17 +596,32 @@ function drawReview(job) {
   if (box.dataset.job === job.id && box.childElementCount === job.candidates.length) return;  // keep the user's ticks while polling
   box.dataset.job = job.id;
   const by = !job.engine || job.engine === "offline" ? "offline scoring" : job.engine;
-  $("reviewTitle").textContent = `Choose your clips: ${job.candidates.length} moments found by ${by}`;
+  const isComp = job.kind === "compilation";
+  $("reviewTitle").textContent = isComp ? `Build your compilation: ${job.candidates.length} moments found by ${by}`
+    : `Choose your clips: ${job.candidates.length} moments found by ${by}`;
+  $("compTitleRow").hidden = !isComp;
+  if (isComp) $("compTitle").value = job.comp_title || "";
   const mins = (t) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}`;
   const count = () => {
-    const n = box.querySelectorAll("input[type=checkbox]:checked").length;
-    $("reviewGo").textContent = `Render selected (${n})`;
+    const rows = [...box.querySelectorAll(".cand")].filter((r) => r.querySelector("input[type=checkbox]").checked);
+    const n = rows.length;
+    const secs = rows.reduce((a, r) => a + Number(r.dataset.duration || 0), 0);
+    $("reviewGo").textContent = isComp ? `Build compilation (${n} moments, about ${Math.floor(secs / 60)}:${String(Math.round(secs % 60)).padStart(2, "0")})` : `Render selected (${n})`;
     $("reviewGo").disabled = n === 0;
+    if (isComp && job.settings.comp_style === "countdown") {  // numbers follow the order on screen
+      rows.forEach((r, i) => { const tag = r.querySelector(".numTag"); if (tag) tag.textContent = `#${n - i}`; });
+      [...box.querySelectorAll(".cand")].filter((r) => !rows.includes(r)).forEach((r) => { const tag = r.querySelector(".numTag"); if (tag) tag.textContent = ""; });
+    }
   };
   box.replaceChildren(...job.candidates.map((c) => {
     const tick = el("input", { type: "checkbox", checked: !!c.selected });
     const row = el("div", { className: "cand" + (c.selected ? "" : " off") });
     row.dataset.index = c.index;
+    row.dataset.duration = c.duration;
+    const up = el("button", { type: "button", textContent: "\u2191", title: "Play earlier" });
+    const down = el("button", { type: "button", textContent: "\u2193", title: "Play later" });
+    up.onclick = () => { if (row.previousElementSibling) { box.insertBefore(row, row.previousElementSibling); count(); } };
+    down.onclick = () => { if (row.nextElementSibling) { box.insertBefore(row.nextElementSibling, row); count(); } };
     tick.onchange = () => { row.classList.toggle("off", !tick.checked); count(); };
     const hooks = c.hooks && c.hooks.length ? c.hooks : [{ type: "", text: c.hook }];
     const hookSel = el("select", { className: "hookSel" }, hooks.map((h) =>
@@ -600,12 +633,14 @@ function drawReview(job) {
       el("div", { className: "meta" }, [
         el("span", { className: "score" + cls, textContent: `Score ${c.score}` }),
         el("span", { textContent: `${Math.round(c.duration)}s` }),
+        ...(isComp ? [el("span", { className: "score mid numTag" }), el("span", { className: "move" }, [up, down]),
+          el("span", { className: "src", textContent: c.source })] : []),
         el("span", { textContent: `${mins(c.start)} to ${mins(c.end)}` }),
         ...Object.entries(c.scores || {}).filter(([, v]) => v > 0).map(([k, v]) => el("span", { textContent: `${k} ${v}` })),
       ]),
       el("div", { className: "grid2" }, [
         el("div", {}, [el("label", { textContent: "Title" }), titleSel]),
-        el("div", {}, [el("label", { textContent: "Hook text on screen" }), hookSel]),
+        el("div", isComp ? { hidden: true } : {}, [el("label", { textContent: "Hook text on screen" }), hookSel]),
       ]),
       ...(c.teaser ? [el("label", { className: "check", style: "margin:0;font-size:13px" }, [
         el("input", { type: "checkbox", className: "coldSel", checked: true }), `Cold open with: \u201c${c.teaser}\u201d`])] : []),
@@ -618,10 +653,11 @@ function drawReview(job) {
 }
 
 function clipCard(jobId, c) {
-  const isStory = c.kind === "story";
+  const isStory = c.kind === "story" || c.kind === "compilation";
+  const chapters = c.kind === "compilation" ? (c.chapters || []).join("\n") : "";
   const base = `/media/${jobId}/`;
   const tags = c.hashtags.map((h) => "#" + h).join(" ");
-  const post = `${c.title}\n\n${c.description}\n\n${tags}`.trim();
+  const post = `${c.title}\n\n${c.description}${c.chapters && c.chapters.length ? "\n\n" + c.chapters.join("\n") : ""}\n\n${tags}`.trim();
   const copy = el("button", { type: "button", textContent: "Copy text" });
   copy.onclick = async () => {
     try { await navigator.clipboard.writeText(post); copy.textContent = "Copied"; } catch (e) { prompt("Copy the text:", post); }
@@ -659,7 +695,7 @@ function clipCard(jobId, c) {
       subs,
       el("div", { className: "title", textContent: c.title }),
       el("div", { className: "text", textContent: `${c.description} ${tags}` }),
-      el("div", { className: "why", textContent: isStory ? c.transcript : c.reason }),
+      el("div", { className: "why", style: chapters ? "white-space:pre-line;font-style:normal" : "", textContent: chapters || (isStory ? c.transcript : c.reason) }),
       el("div", { className: "actions" }, [
         el("a", { className: "dl", href: base + c.file + "?download=1", textContent: "Download" }), ...(isStory ? [] : [edit]), copy, track]),
     ]),

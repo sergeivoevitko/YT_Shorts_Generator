@@ -69,6 +69,25 @@ compares your clips by hook type, caption style, length, cold open and platform.
 now and then. Once six or more clips have view counts, clear patterns are passed to the AI when it picks
 moments for your next video. With few clips the averages can mislead, so treat them as hints.
 
+## Compilation
+
+Switch to **Compilation** at the top left to turn several videos into one "best moments" video.
+
+1. Paste video links (one per line) and/or choose video files, up to 12 in total.
+2. Pick a theme (best, funniest, most surprising, most useful, most emotional, or describe your own), a style
+   (numbered countdown or plain reel) and a target length from 30 seconds to 5 minutes.
+3. Press **Find moments for the compilation**. The app transcribes every video, marks loud reactions
+   (laughter, cheering) as hints, and asks the AI for moments that fit the theme.
+4. In the list, tick the moments you want, move them up or down to set the order, edit the title, and press
+   **Build compilation**.
+
+The result opens with a short teaser of the best moment under the title, then plays the moments in order with
+a number and label on each. `post_text.txt` includes chapter timestamps to paste into the description. Choose
+16:9 under Output for a normal YouTube video or 9:16 for a vertical one.
+
+Use videos you own or have permission to reuse. Compilations of other people's videos are a common target for
+copyright claims and for YouTube's reused-content rule.
+
 ## Turning on the AI
 
 Without an AI the app picks moments with simple offline scoring and uses built-in stories. With one, the AI

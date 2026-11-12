@@ -23,7 +23,7 @@ PROVIDERS: dict[str, dict] = {
     "gemini": {"name": "Google Gemini (free tier)", "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
                "model": "gemini-3.5-flash", "chunk": 300_000, "key_url": "https://aistudio.google.com/apikey"},
     "groq": {"name": "Groq (free tier, very fast)", "base_url": "https://api.groq.com/openai/v1",
-             "model": "openai/gpt-oss-120b", "chunk": 16_000, "key_url": "https://console.groq.com/keys"},
+             "model": "openai/gpt-oss-120b", "chunk": 8_000, "request_tokens": 8_000, "key_url": "https://console.groq.com/keys"},
     "cerebras": {"name": "Cerebras (free tier, very fast)", "base_url": "https://api.cerebras.ai/v1",
                  "model": "gpt-oss-120b", "chunk": 60_000, "key_url": "https://cloud.cerebras.ai"},
     "openrouter": {"name": "OpenRouter (free models)", "base_url": "https://openrouter.ai/api/v1",
@@ -117,7 +117,14 @@ def _retry_delay(resp: httpx.Response) -> float | None:
     except ValueError:
         pass
     m = re.search(r'"retryDelay":\s*"([\d.]+)s"', resp.text) or re.search(r"retry in ([\d.]+)\s*s", resp.text, re.I)
-    return float(m.group(1)) if m else None
+    if m:
+        return float(m.group(1))
+    # Groq: "Please try again in 37.5s" or "in 1m2.5s"
+    m = re.search(r"try again in (?:(\d+)m)?([\d.]+)(ms|s)", resp.text, re.I)
+    if m:
+        secs = float(m.group(2)) / (1000.0 if m.group(3).lower() == "ms" else 1.0)
+        return int(m.group(1) or 0) * 60 + secs
+    return None
 
 
 def _scrub(text: str, cfg: dict) -> str:
@@ -301,6 +308,10 @@ def find_working_model(max_tries: int = 8) -> dict:
     return {"ok": False, "model": "", "tried": tried}
 
 
+class TooLarge(RuntimeError):
+    """The provider refused the request because it does not fit its size limit."""
+
+
 def _ollama_chat(system: str, user: str, cfg: dict, want_json: bool, max_tokens: int, schema: dict | None,
                  say: Callable[[str], None], read_timeout: float) -> str:
     """Ollama through its own API instead of the OpenAI-compatible one. Only the native
@@ -362,7 +373,7 @@ def _ollama_chat(system: str, user: str, cfg: dict, want_json: bool, max_tokens:
     return content
 
 
-def chat(system: str, user: str, cfg: dict | None = None, want_json: bool = True, max_tokens: int = 8000,
+def chat(system: str, user: str, cfg: dict | None = None, want_json: bool = True, max_tokens: int = 4096,
          log: Callable[[str], None] | None = None, retries: int = 3, read_timeout: float | None = None,
          schema: dict | None = None) -> str:
     """One chat completion. Waits and retries when the free tier says to slow down."""
@@ -370,15 +381,27 @@ def chat(system: str, user: str, cfg: dict | None = None, want_json: bool = True
     say = lambda msg: (config.applog(_scrub(f"[ai] {msg}", cfg)), log and log(msg))
     if cfg["provider"] == "ollama":
         return _ollama_chat(system, user, cfg, want_json, max_tokens, schema, say, read_timeout or 900.0)
+    # Free tiers cap the tokens of one request, and they count the room reserved for the
+    # answer as well as the prompt. Keep the reservation inside the provider's limit.
+    budget = PROVIDERS.get(cfg["provider"], {}).get("request_tokens")
+    if budget:
+        prompt_estimate = int((len(system) + len(user)) / 3.4)
+        max_tokens = max(900, min(max_tokens, budget - prompt_estimate - 300))
     payload = {"model": cfg["model"], "max_tokens": max_tokens,
                "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
+    shrunk = False
+    if "gpt-oss" in cfg["model"].lower():
+        # Reasoning models can spend the whole answer allowance on reasoning and return nothing.
+        payload["reasoning_effort"] = "low"
     if want_json:
         payload["response_format"] = {"type": "json_object"}
     read_timeout = read_timeout or (900.0 if cfg["local"] else 150.0)
     timeout = httpx.Timeout(read_timeout, connect=15.0)
     url = cfg["base_url"] + "/chat/completions"
     last = ""
-    for attempt in range(retries + 1):
+    attempt, rate_waits = -1, 0
+    while attempt < retries:
+        attempt += 1
         started = time.time()
         config.applog(f"[ai] request to {cfg['name']} model={cfg['model']} url={url} "
                       f"prompt_chars={len(system) + len(user)} attempt={attempt + 1}")
@@ -400,10 +423,42 @@ def chat(system: str, user: str, cfg: dict | None = None, want_json: bool = True
                              f"body={resp.text[:300]!r}", cfg))
         if resp.status_code == 200:
             try:
-                return resp.json()["choices"][0]["message"]["content"] or ""
+                message = resp.json()["choices"][0]["message"]
             except (ValueError, KeyError, IndexError, TypeError) as exc:
                 raise RuntimeError(f"{cfg['name']} sent an answer in an unexpected format.") from exc
+            content = message.get("content") or ""
+            if not content.strip() and (message.get("reasoning") or message.get("reasoning_content")):
+                say(f"{cfg['name']} model {cfg['model']} used its whole answer on reasoning and returned no answer.")
+                content = str(message.get("reasoning") or message.get("reasoning_content"))
+            return content
         last = _explain(resp)
+        if resp.status_code in (400, 413, 429) and re.search(
+                r"too large|reduce your message|context length|maximum context|too many tokens", resp.text, re.I):
+            # "Limit 8000, Requested 8574": shrink the answer reservation to fit and try once more.
+            m = re.search(r"Limit\s+(\d+),\s*Requested\s+(\d+)", resp.text)
+            room = int(m.group(1)) - (int(m.group(2)) - payload["max_tokens"]) - 200 if m else 0
+            if m and not shrunk and room >= 900:
+                shrunk = True
+                say(f"{cfg['name']} limits a request to {m.group(1)} tokens; shortening the answer allowance to {room}.")
+                payload["max_tokens"] = room
+                try:
+                    resp = httpx.post(url, headers=_headers(cfg), json=payload, timeout=timeout)
+                except httpx.HTTPError as exc:
+                    raise RuntimeError(f"Network problem while talking to {cfg['name']}: {exc}") from exc
+                config.applog(_scrub(f"[ai] answer status={resp.status_code} body={resp.text[:300]!r}", cfg))
+                if resp.status_code == 200:
+                    try:
+                        return resp.json()["choices"][0]["message"]["content"] or ""
+                    except (ValueError, KeyError, IndexError, TypeError) as exc:
+                        raise RuntimeError(f"{cfg['name']} sent an answer in an unexpected format.") from exc
+                last = _explain(resp)
+            if resp.status_code != 429 or not _retry_delay(resp):
+                say(f"{cfg['name']}: the request is too large for this model ({last[:160]})")
+                raise TooLarge(f"The request is too large for {cfg['name']} model '{cfg['model']}'.")
+        if resp.status_code == 400 and "reasoning_effort" in payload and "reasoning" in resp.text.lower():
+            payload.pop("reasoning_effort")
+            attempt -= 1
+            continue
         if resp.status_code == 400 and "response_format" in payload:
             payload.pop("response_format")  # not every server supports JSON mode; the prompt asks for JSON anyway
             continue
@@ -413,6 +468,15 @@ def chat(system: str, user: str, cfg: dict | None = None, want_json: bool = True
                 say(f"quota used up for model {cfg['model']} (retry in {asked:.0f}s)")
                 raise RuntimeError(f"The free quota for model '{cfg['model']}' at {cfg['name']} is used up "
                                    f"(resets in about {asked / 3600:.1f} hours). Choose another model in AI settings.")
+            if resp.status_code == 429 and retries > 0 and rate_waits < 6:
+                # A per-minute limit: waiting the time the provider names always works, so these
+                # waits do not use up the normal retries.
+                rate_waits += 1
+                attempt -= 1
+                wait = min(max((asked or 20.0) + 1.0, 2.0), 75.0)
+                say(f"{cfg['name']} free tier limit reached; waiting {wait:.0f}s before continuing.")
+                time.sleep(wait)
+                continue
             if attempt < retries:
                 wait = min(max(asked if asked is not None else 8.0 * (attempt + 1), 2.0), 65.0)
                 say(f"{cfg['name']} asked to slow down ({resp.status_code}); waiting {wait:.0f}s.")
@@ -437,7 +501,7 @@ def _extract_json(text: str) -> dict:
 
 
 def chat_json(system: str, user: str, schema: Type[BaseModel], shape: str,
-              log: Callable[[str], None] | None = None, max_tokens: int = 8000,
+              log: Callable[[str], None] | None = None, max_tokens: int = 4096,
               strict: Type[BaseModel] | None = None) -> BaseModel:
     """Chat completion parsed and validated against a pydantic model, with one repair attempt.
     `schema` is what the answer must satisfy to be used (it can be forgiving about optional

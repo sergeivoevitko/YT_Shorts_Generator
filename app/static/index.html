@@ -53,6 +53,24 @@
         </div>
         <label class="check"><input type="checkbox" id="ambient_pad"> Soft ambient sound when no music is uploaded</label>
       </div>
+      <div class="only-comp">
+        <label>Video links, one per line</label>
+        <textarea id="compUrls" rows="3" placeholder="https://www.youtube.com/watch?v=...&#10;https://www.youtube.com/watch?v=..."></textarea>
+        <label class="drop" style="margin-top:10px"><input type="file" id="compFiles" accept="video/*" multiple>
+          <b>And/or choose video files</b><span id="compFilesName">Up to 12 videos in total</span></label>
+        <div class="grid2">
+          <div><label>Theme</label><select id="comp_theme"></select></div>
+          <div><label>Style</label><select id="comp_style"></select></div>
+        </div>
+        <div id="compCustomRow">
+          <label>Describe the moments you want</label>
+          <input type="text" id="comp_theme_text" maxlength="200" placeholder="e.g. every time someone is shocked by how strong he is">
+        </div>
+        <label>Target length: <b id="compSecVal"></b></label>
+        <input type="range" id="comp_seconds" min="30" max="300" step="15">
+        <label class="check"><input type="checkbox" id="comp_intro"> Start with a short teaser of the best moment and the title</label>
+        <p class="hint">The app finds moments that fit the theme in every video and joins them into one video. Pick 16:9 under Output for a normal YouTube video, or 9:16 for a vertical one. Use videos you own or have permission to reuse: compilations of other people's videos are a common target for copyright claims.</p>
+      </div>
       <button class="primary" id="go">Generate shorts</button>
       <p class="hint" id="formError"></p>
     </div>
@@ -102,7 +120,7 @@
       </div>
     </div>
 
-    <div class="card">
+    <div class="card no-comp">
       <h2>5. Hook</h2>
       <div class="grid2">
         <div><label>Opening text style</label><select id="hook_style"></select></div>
@@ -142,17 +160,17 @@
 
     <div class="card">
       <h2>7. Edits</h2>
-      <div class="only-clips">
-        <label class="check"><input type="checkbox" id="cold_open"> Cold open: start with a 2 to 3 second teaser of the strongest line</label>
+      <div class="only-clips also-comp">
+        <label class="check no-comp"><input type="checkbox" id="cold_open"> Cold open: start with a 2 to 3 second teaser of the strongest line</label>
         <label class="check"><input type="checkbox" id="remove_silence"> Cut out pauses (jump cuts)</label>
         <label class="check"><input type="checkbox" id="remove_fillers"> Cut filler words (um, uh, er)</label>
         <label class="check"><input type="checkbox" id="zooms"> Punch-in zooms on new sentences</label>
-        <label class="check"><input type="checkbox" id="sfx"> Sound effects (whoosh on zooms, pop on hook and emojis)</label>
+        <label class="check no-comp"><input type="checkbox" id="sfx"> Sound effects (whoosh on zooms, pop on hook and emojis)</label>
         <label class="check"><input type="checkbox" id="normalize_audio"> Even out loudness</label>
       </div>
       <label class="check"><input type="checkbox" id="emojis"> Emojis on key words</label>
       <label class="check"><input type="checkbox" id="progress_bar"> Progress bar along the bottom</label>
-      <div class="grid2 only-clips">
+      <div class="grid2 only-clips also-comp">
         <div><label>Cut pauses longer than: <b id="gapVal"></b></label><input type="range" id="silence_gap" min="0.25" max="1.5" step="0.05"></div>
         <div><label>Zoom strength: <b id="zoomVal"></b></label><input type="range" id="zoom_amount" min="1.04" max="1.3" step="0.01"></div>
       </div>
@@ -171,7 +189,7 @@
 
     <div class="card">
       <h2>8. Analysis</h2>
-      <label class="check only-clips"><input type="checkbox" id="review_picks"> Let me choose which moments to render (shows more options first)</label>
+      <label class="check only-clips also-comp"><input type="checkbox" id="review_picks"> Let me choose which moments to render (shows more options first)</label>
       <label class="check"><input type="checkbox" id="use_ai"> <span id="useAiLabel">Let the AI pick the moments and write the hooks</span></label>
       <p class="hint" id="aiHint"></p>
       <label>Speech recognition</label>
@@ -212,6 +230,10 @@
         </div>
       </div>
       <p class="hint">Tick the moments you want. You can pick the on-screen hook and the title for each one. Nothing is rendered until you press Render selected.</p>
+      <div id="compTitleRow" hidden>
+        <label>Title shown at the start</label>
+        <input type="text" id="compTitle" maxlength="80">
+      </div>
       <div id="reviewList"></div>
     </div>
     <div id="results" hidden>
@@ -228,6 +250,7 @@
     <div class="card empty" id="empty">
       <h2>Your videos will appear here</h2>
       <p class="only-story">Choose your clips on the left, pick a theme or paste your own text, and press Generate. The app picks the best stretches of your footage, records a voiceover, and cuts everything together with captions.</p>
+      <p class="only-comp">Add several video links or files on the left, choose a theme, and press Generate. The app finds the moments that fit in every video, lets you choose and order them, and joins them into one video.</p>
       <p class="only-clips">Paste a link on the left, pick how you want the clips to look, and press Generate. The app downloads the video, transcribes it, finds the strongest moments, then cuts, reframes and captions each one.</p>
     </div>
 

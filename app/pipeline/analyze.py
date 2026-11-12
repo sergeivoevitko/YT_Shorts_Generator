@@ -132,7 +132,8 @@ class LooseVideoPlan(BaseModel):
 
 
 def _transcript_text(sentences: list[dict]) -> str:
-    return "\n".join(f"[{s['i']}] {s['s']:.1f}-{s['e']:.1f} {s['text']}" for s in sentences)
+    return "\n".join(f"[{s['i']}] {s['s']:.1f}-{s['e']:.1f} {s['text']}"
+                     + (" (loud reaction here)" if s.get("loud") else "") for s in sentences)
 
 
 def analyze_with_claude(sentences: list[dict], title: str, n: int, min_len: float, max_len: float,
@@ -208,27 +209,43 @@ def analyze_with_provider(sentences: list[dict], title: str, n: int, min_len: fl
     per_chunk = n if len(chunks) == 1 else max(1, -(-n * 3 // (2 * len(chunks))))
     found: list[dict] = []
     failed = 0
-    for i, part in enumerate(chunks, start=1):
+    queue = list(chunks)
+    done = 0
+    while queue:
+        part = queue.pop(0)
+        done += 1
+        total = done + len(queue)
         user = (f"Video title: {title}\nNumber of clips wanted: {per_chunk}\n"
-                f"Each clip must last between {min_len:.0f} and {max_len:.0f} seconds.\n")
-        if len(chunks) > 1:
-            user += f"This is part {i} of {len(chunks)} of the transcript. Only use sentence numbers that appear below.\n"
+                f"Each clip must last between {min_len:.0f} and {max_len:.0f} seconds. Judge lengths roughly from "
+                f"the timestamps; the app adjusts a clip that is a little short or long, so do not work them out "
+                f"step by step.\n")
+        if total > 1:
+            user += f"This is part {done} of {total} of the transcript. Only use sentence numbers that appear below.\n"
         if instructions.strip():
             user += f"Extra direction from the creator: {instructions.strip()}\n"
         user += f"\nTranscript:\n{_transcript_text(part)}"
         try:
             plan = llm.chat_json(SYSTEM_PROMPT, user, LooseVideoPlan, CLIP_SHAPE, log, strict=VideoPlan)
+        except llm.TooLarge:
+            if len(part) >= 12:  # send it as two smaller parts instead
+                half = len(part) // 2
+                queue[:0] = [part[:half + 2], part[half - 2:]]
+                done -= 1
+                log(f"{ai['name']}: that part was too large for the model, splitting it in two.")
+                continue
+            failed += 1
+            continue
         except Exception as exc:
             failed += 1
-            log(f"{ai['name']}: part {i} of {len(chunks)} failed ({str(exc)[:160]}).")
+            log(f"{ai['name']}: part {done} of {total} failed ({str(exc)[:160]}).")
             # Give up early if the first two parts both fail: the rest will fail the same way.
             if failed >= 2 and not found:
                 raise
             continue
         lo, hi = part[0]["i"], part[-1]["i"]
         found += [c.model_dump() for c in plan.clips if lo <= c.start_sentence <= c.end_sentence <= hi]
-        if len(chunks) > 1:
-            log(f"{ai['name']}: part {i} of {len(chunks)} analyzed, {len(plan.clips)} candidates.")
+        if total > 1:
+            log(f"{ai['name']}: part {done} of {total} analyzed, {len(plan.clips)} candidates.")
     if not found:
         raise RuntimeError("no part of the transcript produced usable clips")
     found.sort(key=lambda c: -c["score"])

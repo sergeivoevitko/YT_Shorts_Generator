@@ -150,3 +150,9 @@ body[data-mode=story] .only-clips, body[data-mode=clips] .only-story { display: 
 .insight b { display: block; font-size: 13px; margin-bottom: 4px; }
 .insight div { font-size: 13px; color: #c3cad8; }
 .insight div:first-of-type { color: var(--good); }
+
+body[data-mode=comp] .only-story, body[data-mode=comp] .only-clips:not(.also-comp), body[data-mode=comp] .no-comp,
+body:not([data-mode=comp]) .only-comp { display: none !important; }
+.cand .move { display: flex; gap: 4px; }
+.cand .move button { padding: 2px 9px; font-size: 13px; }
+.cand .src { color: var(--accent); }

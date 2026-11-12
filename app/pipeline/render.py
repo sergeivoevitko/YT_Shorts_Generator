@@ -302,7 +302,7 @@ def add_overlays(chains: list[str], cur: str, add_input, settings: dict, style_k
 def render_clip(src: str, info: dict, clip: dict, all_words: list[dict], settings: dict, job_dir: Path,
                 index: int, style_key: str | None, music: str | None,
                 progress: Callable[[float, str], None], cancelled: Callable[[], bool],
-                log: Callable[[str], None], version: int = 0) -> dict:
+                log: Callable[[str], None], version: int = 0, intermediate: bool = False) -> dict:
     fps, fps_s = resolve_fps(settings["fps"], info.get("fps", 30.0))
     width, height = output_size(settings["aspect"], settings["resolution"])
     aw, ah = ASPECTS[settings["aspect"]]
@@ -499,7 +499,8 @@ def render_clip(src: str, info: dict, clip: dict, all_words: list[dict], setting
 
     try:
         run_encode(build, settings, job_dir, out_dur,
-                   lambda p: progress(0.2 + 0.78 * p, f"Clip {index}: rendering"), cancelled, log)
+                   lambda p: progress(0.2 + 0.78 * p, f"Clip {index}: rendering"), cancelled, log,
+                   fast=intermediate)
     except RuntimeError as exc:
         if "Cancelled" in str(exc):
             raise
