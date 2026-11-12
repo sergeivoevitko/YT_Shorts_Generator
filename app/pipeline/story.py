@@ -34,7 +34,8 @@ Write for the ear:
 - Short, plain sentences. One idea per sentence. Vary the rhythm, and let a few lines be very short.
 - Open with a line that makes someone stop scrolling: a tension, a question, or a blunt truth. Never \
 open with a greeting or "in a world".
-- Build to one clear idea and end on a line worth remembering. No call to like or subscribe.
+- Build to one clear idea and end on a line worth remembering. Where it fits, let the last line \
+echo the first, so the video loops cleanly when it replays. No call to like or subscribe.
 - Speak to "you". Use concrete images that fit nature footage (weather, rivers, mountains, light, \
 seasons, trails) without describing specific shots, because you do not know what the footage shows.
 - Original writing only. No quotes from real people, no invented statistics, no cliches such as \
@@ -44,10 +45,10 @@ quotation marks, numbers written out as words. Separate paragraphs with a blank 
 narrator should take a longer pause.
 
 For each story also return:
-- title: a short post title (under 70 characters).
+- title: a short post title of 4 to 6 words and 20 to 40 characters, key word near the front.
 - hook: on-screen text for the first seconds, at most 7 words, different from the first spoken line.
-- description: a one or two sentence post caption.
-- hashtags: 4 to 6 hashtags without the # sign.
+- description: a one or two sentence post caption with the point in the first 125 characters.
+- hashtags: 3 to 5 hashtags without the # sign.
 - emphasis_words: 5 to 10 single words from the script to highlight in the captions.
 - emojis: 2 to 4 cues, each a single word from the script (copied exactly) and one fitting emoji.
 

@@ -28,12 +28,20 @@ payoff sentence, never mid-thought.
 For each clip return:
 - start_sentence and end_sentence: sentence numbers from the transcript (inclusive). The clip runs \
 from the start of the first to the end of the last, so choose boundaries with care.
-- title: a short, specific title for the post (under 70 characters), no clickbait that the clip \
-does not deliver.
-- hook: on-screen text for the first three seconds, at most 8 words, that creates an open question \
-the clip answers. It must be different from the spoken first sentence and must not spoil the payoff.
-- description: a one or two sentence post caption.
-- hashtags: 3 to 6 relevant hashtags without the # sign.
+- titles: three different titles for the post, best first. Shorts titles are cut off after about \
+40 characters, so write 4 to 6 words and 20 to 40 characters, with the key word near the front. \
+No clickbait that the clip does not deliver.
+- title: the first of those titles.
+- hooks: three options for the on-screen text shown during the first three seconds, each at most \
+8 words and each using a different approach. Choose the three that fit this clip best from: \
+"curiosity" (opens a question the clip answers), "shock" (a claim that contradicts what people \
+believe), "problem" (names a pain the viewer has), "story" (drops the viewer into a moment), \
+"proof" (a result or a number). Each must differ from the spoken first sentence and must not \
+spoil the payoff. Put the strongest first.
+- hook: the text of the first of those hooks.
+- description: a one or two sentence post caption. Only the first 125 characters are shown in \
+previews, so the point goes first.
+- hashtags: 3 to 5 relevant hashtags without the # sign.
 - emphasis_words: 4 to 10 single words spoken in the clip that carry the meaning (numbers, strong \
 nouns and verbs) to highlight in the captions. Copy them exactly as spoken.
 - emojis: 2 to 5 cues, each a single spoken word from the clip (copied exactly) and one emoji that \
@@ -46,6 +54,10 @@ short-form audiences currently engage with.
 typical content in its niche. Be critical: most clips should land between 50 and 85.
 - reason: one sentence on why this moment works.
 
+Viewers decide in the first one to three seconds whether to swipe away, and a clip that gets \
+replayed is promoted more. So weight the opening most heavily, and where two moments are equally \
+good prefer the one whose last line connects back to its first, because it loops cleanly.
+
 Rules: clips must not overlap, each must respect the duration limits given, and they should cover \
 different ideas. Return them best first. If the video has fewer good moments than requested, return \
 fewer clips rather than padding with weak ones."""
@@ -56,10 +68,17 @@ class EmojiCue(BaseModel):
     emoji: str
 
 
+class HookOption(BaseModel):
+    type: str
+    text: str
+
+
 class ClipPlan(BaseModel):
     start_sentence: int
     end_sentence: int
+    titles: List[str]
     title: str
+    hooks: List[HookOption]
     hook: str
     description: str
     hashtags: List[str]
@@ -128,7 +147,9 @@ def analyze_with_claude(sentences: list[dict], title: str, n: int, min_len: floa
     return [c.model_dump() for c in plan.clips]
 
 
-CLIP_SHAPE = """{"clips": [{"start_sentence": 12, "end_sentence": 19, "title": "...", "hook": "...", \
+CLIP_SHAPE = """{"clips": [{"start_sentence": 12, "end_sentence": 19, "titles": ["...", "...", "..."], \
+"title": "...", "hooks": [{"type": "curiosity", "text": "..."}, {"type": "shock", "text": "..."}, \
+{"type": "story", "text": "..."}], "hook": "...", \
 "description": "...", "hashtags": ["...", "..."], "emphasis_words": ["...", "..."], \
 "emojis": [{"word": "...", "emoji": "🔥"}], "hook_score": 80, "flow_score": 70, "value_score": 75, \
 "trend_score": 60, "score": 74, "reason": "..."}]}"""
@@ -294,6 +315,15 @@ def _fit(clip: dict, sentences: list[dict], min_len: float, max_len: float) -> d
     clip = dict(clip, start_sentence=a, end_sentence=b)
     clip["hashtags"] = [re.sub(r"[^A-Za-z0-9_]", "", h) for h in clip.get("hashtags", []) if h][:8]
     clip["hook"] = " ".join(str(clip.get("hook", "")).split()[:12])
+    hooks = [{"type": str(h.get("type", ""))[:20], "text": " ".join(str(h.get("text", "")).split()[:12])}
+             for h in clip.get("hooks") or [] if str(h.get("text", "")).strip()][:4]
+    if not clip["hook"] and hooks:
+        clip["hook"] = hooks[0]["text"]
+    clip["hooks"] = hooks
+    titles = [str(t).strip()[:100] for t in clip.get("titles") or [] if str(t).strip()][:4]
+    if not str(clip.get("title", "")).strip() and titles:
+        clip["title"] = titles[0]
+    clip["titles"] = titles or [clip["title"]]
     clip["score"] = max(0, min(int(clip.get("score", 50)), 100))
     if "hook_score" in clip:
         clip["scores"] = {k: max(0, min(int(clip.pop(f"{k}_score", 0)), 100)) for k in ("hook", "flow", "value", "trend")}
@@ -302,8 +332,12 @@ def _fit(clip: dict, sentences: list[dict], min_len: float, max_len: float) -> d
 
 
 def analyze(sentences: list[dict], title: str, n: int, min_len: float, max_len: float,
-            use_ai: bool, instructions: str, log: Callable[[str], None]) -> tuple[list[dict], str]:
-    """Return (clips, engine). Each clip has start/end in seconds plus its metadata."""
+            use_ai: bool, instructions: str, log: Callable[[str], None], limit: int | None = None
+            ) -> tuple[list[dict], str]:
+    """Return (clips, engine). Each clip has start/end in seconds plus its metadata.
+    limit > n asks for extra candidates so the user can choose among them."""
+    limit = max(limit or n, n)
+    n, wanted = limit, n
     if not sentences:
         raise RuntimeError("No speech was found in this video, so there is nothing to clip.")
     clips: list[dict] = []
@@ -332,6 +366,7 @@ def analyze(sentences: list[dict], title: str, n: int, min_len: float, max_len: 
             continue
         used.append((a, b))
         fitted.append(clip)
+    fitted.sort(key=lambda c: -c["score"])
     fitted = fitted[:n]
 
     if engine == "offline":

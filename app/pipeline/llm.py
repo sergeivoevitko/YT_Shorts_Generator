@@ -30,6 +30,20 @@ PROVIDERS: dict[str, dict] = {
                    "model": "meta-llama/llama-3.3-70b-instruct:free", "chunk": 60_000, "key_url": "https://openrouter.ai/keys"},
     "mistral": {"name": "Mistral (free tier)", "base_url": "https://api.mistral.ai/v1",
                 "model": "mistral-small-latest", "chunk": 80_000, "key_url": "https://console.mistral.ai/api-keys"},
+    "github": {"name": "GitHub Models (free with a GitHub account)", "base_url": "https://models.github.ai/inference",
+               "model": "openai/gpt-4.1-mini", "chunk": 20_000, "key_url": "https://github.com/settings/personal-access-tokens"},
+    "sambanova": {"name": "SambaNova (free tier, fast)", "base_url": "https://api.sambanova.ai/v1",
+                  "model": "Meta-Llama-3.3-70B-Instruct", "chunk": 40_000, "key_url": "https://cloud.sambanova.ai/apis"},
+    "nvidia": {"name": "NVIDIA NIM (free developer access)", "base_url": "https://integrate.api.nvidia.com/v1",
+               "model": "meta/llama-3.3-70b-instruct", "chunk": 60_000, "key_url": "https://build.nvidia.com"},
+    "zai": {"name": "Z.ai GLM (free flash models)", "base_url": "https://api.z.ai/api/paas/v4",
+            "model": "glm-4.5-flash", "chunk": 60_000, "key_url": "https://z.ai/manage-apikey/apikey-list"},
+    "huggingface": {"name": "Hugging Face (small free allowance)", "base_url": "https://router.huggingface.co/v1",
+                    "model": "meta-llama/Llama-3.3-70B-Instruct", "chunk": 30_000, "key_url": "https://huggingface.co/settings/tokens"},
+    "cohere": {"name": "Cohere (free trial key)", "base_url": "https://api.cohere.ai/compatibility/v1",
+               "model": "command-a-03-2025", "chunk": 60_000, "key_url": "https://dashboard.cohere.com/api-keys"},
+    "pollinations": {"name": "Pollinations (free, no key needed)", "base_url": "https://text.pollinations.ai/openai",
+                     "model": "openai", "chunk": 12_000, "keyless": True, "key_url": ""},
     "ollama": {"name": "Ollama (runs on this PC, free)", "base_url": "http://localhost:11434/v1",
                "model": "llama3.1", "chunk": 7_000, "local": True, "key_url": "https://ollama.com/download"},
     "lmstudio": {"name": "LM Studio (runs on this PC, free)", "base_url": "http://localhost:1234/v1",
@@ -55,8 +69,10 @@ def current() -> dict:
         model = preset["model"]  # retired by Google; saved by an earlier version of this app
     api_key = (per.get("api_key") or "").strip()
     local = bool(preset.get("local")) or base.startswith(("http://localhost", "http://127.0.0.1"))
+    keyless = bool(preset.get("keyless"))
     return {"provider": key, "name": preset["name"].split(" (")[0], "model": model, "api_key": api_key,
-            "base_url": base, "ready": bool(base and model and (api_key or local)), "local": local,
+            "base_url": base, "ready": bool(base and model and (api_key or local or keyless)), "local": local,
+            "keyless": keyless,
             "chunk": int(preset["chunk"])}
 
 
@@ -108,6 +124,183 @@ def _scrub(text: str, cfg: dict) -> str:
     return text.replace(cfg["api_key"], "***") if cfg.get("api_key") else text
 
 
+# ---------------------------------------------------------------------------
+# Ollama detection
+# ---------------------------------------------------------------------------
+
+_NOT_GENERAL = ("embed", "coder", "code", "bge", "minilm", "rerank", "guard", "whisper", "llava", "vision", "moondream", "ocr")
+_FAMILY_RANK = ("qwen3", "qwen2.5", "llama3.3", "llama3.2", "llama3.1", "gemma3", "gemma2", "mistral-nemo", "mistral",
+                "phi4", "phi3", "deepseek-r1", "gpt-oss", "llama", "qwen", "gemma")
+_ollama_cache: dict = {"at": 0.0, "data": None}
+
+
+def _ollama_exe() -> str:
+    import os
+    import shutil
+
+    found = shutil.which("ollama")
+    if found:
+        return found
+    for path in (os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Ollama", "ollama.exe"),
+                 "/usr/local/bin/ollama", "/opt/homebrew/bin/ollama",
+                 "/Applications/Ollama.app/Contents/Resources/ollama"):
+        if path and os.path.exists(path):
+            return path
+    return ""
+
+
+def _params(model: dict) -> float:
+    """Model size in billions of parameters, from Ollama's details or the tag name."""
+    text = str((model.get("details") or {}).get("parameter_size") or "")
+    m = re.search(r"([\d.]+)\s*([BM])", text, re.I) or re.search(r"[:\-]([\d.]+)([bm])\b", str(model.get("name", "")), re.I)
+    if not m:
+        return 0.0
+    return float(m.group(1)) * (1.0 if m.group(2).upper() == "B" else 0.001)
+
+
+def _rank_ollama(model: dict) -> float:
+    """Higher is better for picking moments and writing short text on a normal PC."""
+    name = str(model.get("name", "")).lower()
+    if any(x in name for x in _NOT_GENERAL):
+        return -1.0
+    size = _params(model)
+    # 7 to 14 billion parameters is the sweet spot: smaller models follow instructions
+    # poorly, larger ones are slow on most graphics cards.
+    fit = 10 - abs(size - 9) * 0.6 if size else 3
+    if size and size < 3:
+        fit -= 4
+    family = next((len(_FAMILY_RANK) - i for i, f in enumerate(_FAMILY_RANK) if name.startswith(f)), 0)
+    return max(fit, 0.1) + family * 0.15
+
+
+def ollama_status(force: bool = False) -> dict:
+    """Is Ollama installed and running here, which version, and which models are usable."""
+    if not force and _ollama_cache["data"] is not None and time.time() - _ollama_cache["at"] < 20:
+        return _ollama_cache["data"]
+    saved = (config.load_settings().get("providers") or {}).get("ollama", {})
+    host = re.sub(r"/v1/?$", "", (saved.get("base_url") or PROVIDERS["ollama"]["base_url"]).rstrip("/"))
+    exe = _ollama_exe()
+    out = {"installed": bool(exe), "running": False, "version": "", "host": host, "models": [], "recommended": "",
+           "suggest_pull": ""}
+    try:
+        ver = httpx.get(host + "/api/version", timeout=httpx.Timeout(2.0, connect=1.0))
+        if ver.status_code == 200:
+            out["running"], out["installed"] = True, True
+            out["version"] = str(ver.json().get("version", ""))
+            tags = httpx.get(host + "/api/tags", timeout=httpx.Timeout(5.0, connect=1.0)).json().get("models") or []
+            models = [{"name": m.get("name", ""), "params": round(_params(m), 1),
+                       "gb": round((m.get("size") or 0) / 1e9, 1), "rank": round(_rank_ollama(m), 2)} for m in tags]
+            models.sort(key=lambda m: -m["rank"])
+            for m in models:
+                m["general"] = m["rank"] > 0
+            out["models"] = models
+            if models and models[0]["rank"] > 0:
+                out["recommended"] = models[0]["name"]
+            else:
+                out["suggest_pull"] = "qwen2.5:7b"
+    except Exception:
+        pass
+    _ollama_cache.update(at=time.time(), data=out)
+    return out
+
+
+def start_ollama() -> dict:
+    """Start the Ollama server if it is installed but not running."""
+    import subprocess
+    import sys
+
+    status = ollama_status(force=True)
+    exe = _ollama_exe()
+    if status["running"] or not exe:
+        return status
+    flags = {"creationflags": 0x08000000 | 0x00000008} if sys.platform.startswith("win") else {"start_new_session": True}
+    try:
+        subprocess.Popen([exe, "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, **flags)
+    except OSError as exc:
+        config.applog(f"[ai] could not start Ollama: {exc}")
+        return status
+    for _ in range(20):
+        time.sleep(0.5)
+        status = ollama_status(force=True)
+        if status["running"]:
+            config.applog(f"[ai] started Ollama {status['version']}")
+            break
+    return status
+
+
+def auto_configure() -> None:
+    """On a PC where no AI was ever chosen, use Ollama if it is running with a suitable model."""
+    saved = config.load_settings()
+    if saved.get("provider") or config.get_api_key():
+        return
+    status = ollama_status(force=True)
+    if status["running"] and status["recommended"]:
+        allp = dict(saved.get("providers") or {})
+        allp["ollama"] = dict(allp.get("ollama") or {}, model=status["recommended"])
+        config.save_settings({"provider": "ollama", "providers": allp})
+        config.applog(f"[ai] no AI was set up; found Ollama {status['version']} and selected model {status['recommended']}")
+
+
+def _version_tuple(text: str) -> tuple:
+    return tuple(int(x) for x in re.findall(r"\d+", text)[:3]) or (0,)
+
+
+# ---------------------------------------------------------------------------
+# Finding a model that works
+# ---------------------------------------------------------------------------
+
+_PREFER = ("gpt-oss-120b", "llama-3.3-70b", "llama3.3-70b", "llama-4", "qwen3", "qwen-3", "gemini-3.5-flash",
+           "gemini-flash-latest", "gpt-4.1-mini", "gpt-4o-mini", "command-a", "mistral-small", "mistral-medium",
+           "glm-4.5-flash", "glm-4.7-flash", "kimi", "deepseek-v3", "deepseek-chat", "gemma-3", "gemma-4", "llama")
+_SKIP = ("tts", "image", "embedding", "embed", "audio", "live", "veo", "lyria", "imagen", "aqa", "banana", "robotics",
+         "computer-use", "deep-research", "whisper", "guard", "rerank", "moderation", "coder", "codestral", "vision",
+         "ocr", "transcribe", "speech", "safeguard", "antigravity")
+
+
+def usable_models(names: list[str]) -> list[str]:
+    """Drop models that cannot do this job and put the likely best first."""
+    keep = [n for n in names if not any(x in n.lower() for x in _SKIP)]
+
+    def score(n: str) -> int:
+        low = n.lower()
+        return next((i for i, p in enumerate(_PREFER) if p in low), len(_PREFER) + (5 if "preview" in low else 0))
+    return sorted(keep, key=lambda n: (score(n), n))
+
+
+def find_working_model(max_tries: int = 8) -> dict:
+    """Try the provider's models one by one until one answers, then save it."""
+    cfg = current()
+    if cfg["provider"] in ("claude", "ollama"):
+        raise RuntimeError("This is only for cloud providers with a model list.")
+    if not (cfg["api_key"] or cfg["local"] or cfg.get("keyless")):
+        raise RuntimeError("Paste the API key first.")
+    candidates = [m for m in [cfg["model"], PROVIDERS[cfg["provider"]].get("model", "")] if m]
+    try:
+        candidates += usable_models(list_models(cfg))
+    except Exception as exc:
+        config.applog(f"[ai] could not list models for {cfg['name']}: {exc}")
+    seen, tried = set(), []
+    for model in candidates:
+        if model in seen:
+            continue
+        seen.add(model)
+        if len(tried) >= max_tries:
+            break
+        try:
+            chat("You are a connection test.", 'Reply with this exact JSON: {"ok": true}', dict(cfg, model=model),
+                 True, 300, retries=0, read_timeout=20.0)
+        except Exception as exc:
+            tried.append({"model": model, "error": str(exc)[:160]})
+            continue
+        saved = config.load_settings()
+        allp = dict(saved.get("providers") or {})
+        allp[cfg["provider"]] = dict(allp.get(cfg["provider"]) or {}, model=model)
+        config.save_settings({"providers": allp})
+        config.applog(f"[ai] {cfg['name']}: model {model} works and was selected")
+        return {"ok": True, "model": model, "tried": tried}
+    return {"ok": False, "model": "", "tried": tried}
+
+
 def _ollama_chat(system: str, user: str, cfg: dict, want_json: bool, max_tokens: int, schema: dict | None,
                  say: Callable[[str], None], read_timeout: float) -> str:
     """Ollama through its own API instead of the OpenAI-compatible one. Only the native
@@ -121,9 +314,11 @@ def _ollama_chat(system: str, user: str, cfg: dict, want_json: bool, max_tokens:
     payload = {"model": cfg["model"], "stream": False,
                "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
                "options": {"num_ctx": max(num_ctx, 8192), "num_predict": out_tokens, "temperature": 0.4}}
-    if schema is not None:
+    # Answer schemas need Ollama 0.5 or newer; older versions only know plain JSON mode.
+    version = ollama_status().get("version", "")
+    if schema is not None and (not version or _version_tuple(version) >= (0, 5)):
         payload["format"] = schema
-    elif want_json:
+    elif want_json or schema is not None:
         payload["format"] = "json"
     url = host + "/api/chat"
     started = time.time()

@@ -127,3 +127,15 @@ body[data-mode=story] .only-clips, body[data-mode=clips] .only-story { display: 
 .drop span { font-size: 12.5px; }
 
 .warnbox { border-color: rgba(255,225,0,.5); color: var(--accent); font-size: 13.5px; margin: 0; }
+
+.cand { display: grid; grid-template-columns: 26px 1fr; gap: 10px; padding: 12px 0; border-top: 1px solid var(--line); }
+.cand:first-child { border-top: 0; }
+.cand input[type=checkbox] { width: 18px; height: 18px; margin-top: 3px; accent-color: var(--accent); }
+.cand.off .cbody { opacity: .55; }
+.cand .cbody { min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.cand .meta { display: flex; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--muted); align-items: center; }
+.cand select { padding: 7px 10px; font-size: 13.5px; }
+.cand .quote { font-size: 13px; color: #c3cad8; }
+.cand .grid2 label { margin: 0 0 3px; font-size: 12px; }
+
+.style .demo { white-space: pre; }

@@ -29,8 +29,11 @@ macOS and Linux: run `./install.sh`, then `./start.sh` (install FFmpeg and Deno 
    clips and clip length.
 3. Choose the look: framing mode, caption style (or a different style per clip), hook style, and which
    edits to apply.
-4. Press **Generate shorts**. Each finished clip shows a score, a title, a post caption with hashtags, and
-   a download button.
+4. Press **Generate shorts**. The app proposes more moments than you asked for and shows them in a list:
+   tick the ones you want, and choose a title and an on-screen hook for each (the AI offers three of each).
+   Only what you tick is rendered. Untick "Let me choose which moments to render" under Analysis to skip
+   this step and render automatically.
+5. Each finished clip shows a score, a title, a post caption with hashtags, and a download button.
 
 **Edit** on any clip opens the clip editor: change the hook, title and caption, move the start or end of
 the clip by clicking a word, fix a misheard word, or hide a word from the captions. Only that clip is
@@ -66,10 +69,17 @@ a large quality step up. Press **AI settings** and choose a provider:
 
 | Provider | Cost | Notes |
 | --- | --- | --- |
-| Google Gemini, Groq, Cerebras, OpenRouter, Mistral | Free within daily limits | Create a free account, press "Get a key here" in the settings window, paste the key |
-| Ollama, LM Studio | Free, no limits | Runs on your own PC; install the program and download a model first. Slow without a good graphics card |
+| Google Gemini, Groq, Cerebras, OpenRouter, Mistral, SambaNova, NVIDIA NIM, Z.ai, GitHub Models, Cohere, Hugging Face | Free within limits | Create a free account, press "Get a key here" in the settings window, paste the key |
+| Pollinations | Free, no account or key | Quality and speed vary |
+| Ollama, LM Studio | Free, no limits | Runs on your own PC. Slow without a good graphics card |
 | Claude | Paid by usage (a few cents per video) | Best quality. Key from https://console.anthropic.com |
 | Other | Depends | Any service with an OpenAI-compatible API |
+
+**Find a working model** tries the provider's models one by one and selects the first that answers, so you do
+not need to know model names. **Ollama is detected automatically**: the settings window shows its version and
+your installed models and picks the one best suited to this job (general chat models of about 7 to 14 billion
+parameters; coding and embedding models are skipped). If Ollama is installed but not running, the app can start
+it. On a PC where no AI was ever chosen, a running Ollama with a suitable model is used without any setup.
 
 Use **Show available models** to see what the provider currently offers (model names change over time), and
 **Save and test** to check that the key works. Keys are stored only in `workspace/settings.json` on your computer.

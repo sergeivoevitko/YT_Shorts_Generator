@@ -31,6 +31,7 @@ DEFAULTS = {
     "num_videos": 1, "voice": voice.DEFAULT_VOICE, "voice_speed": 0.95, "transition": "crossfade",
     "footage_order": "upload", "ambient_pad": True,
     "whisper_model": "small.en", "speech_engine": "local", "use_ai": True, "instructions": "",
+    "review_picks": True,
 }
 
 STAGES = [("download", 0.10), ("transcribe", 0.30), ("analyze", 0.08), ("render", 0.52)]
@@ -86,7 +87,7 @@ def clean_settings(raw: dict) -> dict:
     s["brand_font"] = s["brand_font"] if s["brand_font"] in captions.FONTS else ""
     s["handle_text"] = str(s["handle_text"])[:40]
     for key in ("remove_silence", "zooms", "progress_bar", "normalize_audio", "use_ai", "remove_fillers", "sfx",
-                "emojis", "logo_enabled"):
+                "emojis", "logo_enabled", "review_picks"):
         s[key] = bool(s[key])
     s["instructions"] = str(s["instructions"])[:2000]
     return s
@@ -106,6 +107,7 @@ class Job:
         self.title = source.get("title", "")
         self.engine = ""
         self.clips: list[dict] = []
+        self.candidates: list[dict] = []   # moments waiting for the user's choice (status "review")
         self.log: list[str] = []
         self.created = time.time()
         self.finished = 0.0
@@ -119,13 +121,15 @@ class Job:
             "source_url": self.source.get("url", ""), "kind": self.source.get("kind", "clips"),
         }
         if full:
-            data.update({"settings": self.settings, "clips": self.clips, "log": self.log[-200:]})
+            data.update({"settings": self.settings, "clips": self.clips, "log": self.log[-200:],
+                         "candidates": self.candidates if self.status == "review" else []})
         return data
 
     def save(self) -> None:
         try:
             data = self.to_dict()
             data["source"] = self.source
+            data["candidates"] = self.candidates
             (self.dir / "job.json").write_text(json.dumps(data, indent=2), encoding="utf-8")
         except OSError:
             pass
@@ -146,7 +150,7 @@ class JobManager:
                 data = json.loads(path.read_text(encoding="utf-8"))
                 job = Job(data["id"], data.get("source", {}), data.get("settings", {}))
                 for key in ("status", "stage", "progress", "message", "error", "title", "engine", "clips",
-                            "log", "created", "finished"):
+                            "log", "created", "finished", "candidates"):
                     setattr(job, key, data.get(key, getattr(job, key)))
                 if job.status in ("queued", "running"):
                     job.status, job.message = "error", "Interrupted when the app was closed"
@@ -175,6 +179,16 @@ class JobManager:
         self.queue.put((job.id, {"index": index, "edit": edit}))
         return True
 
+    def render_selected(self, job_id: str, picks: list[dict]) -> bool:
+        """Continue a job that is waiting for the user's choice of moments."""
+        job = self.jobs.get(job_id)
+        if not job or job.status != "review" or not picks:
+            return False
+        job.status, job.error, job.cancel_flag = "queued", "", False
+        job.message = "Waiting to render your selection"
+        self.queue.put((job.id, {"render": picks}))
+        return True
+
     def get(self, job_id: str) -> Job | None:
         return self.jobs.get(job_id)
 
@@ -183,10 +197,10 @@ class JobManager:
 
     def cancel(self, job_id: str) -> bool:
         job = self.jobs.get(job_id)
-        if not job or job.status not in ("queued", "running"):
+        if not job or job.status not in ("queued", "running", "review"):
             return False
         job.cancel_flag = True
-        if job.status == "queued":
+        if job.status in ("queued", "review"):
             job.status, job.message, job.finished = "cancelled", "Cancelled", time.time()
             job.save()
         return True
@@ -215,16 +229,24 @@ class JobManager:
                 continue
             job.status = "running"
             try:
-                if task:
+                paused = False
+                if task and "render" in task:
+                    self._run_selected(job, task["render"])
+                elif task:
                     self._run_clip(job, task["index"], task["edit"])
                 elif job.source.get("kind") == "story":
                     self._run_story(job)
                 else:
-                    self._run(job)
+                    paused = self._run(job) == "review"
+                if paused:
+                    job.status, job.stage = "review", "review"
+                    job.message = "Choose the moments you want as clips"
+                    job.save()
+                    continue
                 job.status, job.stage, job.progress = "done", "done", 1.0
                 job.message = f"Done: {len(job.clips)} clips ready"
             except Exception as exc:
-                if task and job.clips:
+                if task and "index" in task and job.clips:
                     # The other clips are still fine: report the problem but keep the results.
                     job.status, job.stage, job.progress = "done", "done", 1.0
                     job.message = "Cancelled" if job.cancel_flag else f"Re-render failed: {exc}"
@@ -252,6 +274,7 @@ class JobManager:
         edits = plan.get("word_edits") or {}
         return {
             "w0": plan["w0"], "w1": plan["w1"], "hook": plan.get("hook", ""), "title": plan.get("title", ""),
+            "hooks": plan.get("hooks") or [], "titles": plan.get("titles") or [],
             "description": plan.get("description", ""),
             "words": [{"i": i, "w": edits.get(str(i), words[i]["w"]), "orig": words[i]["w"],
                        "s": words[i]["s"], "e": words[i]["e"]} for i in range(lo, hi + 1)],
@@ -406,9 +429,8 @@ class JobManager:
         shutil.rmtree(fonts, ignore_errors=True)
         _write_post_text(job)
 
-    def _run(self, job: Job) -> None:
-        s = job.settings
-        cancelled = lambda: job.cancel_flag
+    def _helpers(self, job: Job):
+        """(log, stage) closures shared by the clip pipeline steps."""
         offsets, acc = {}, 0.0
         for name, weight in STAGES:
             offsets[name] = (acc, weight)
@@ -428,6 +450,66 @@ class JobManager:
                 job.progress = base + weight * max(0.0, min(p, 1.0))
                 job.message = msg
             return update
+        return log, stage
+
+    def _run_selected(self, job: Job, picks: list[dict]) -> None:
+        """Render the moments the user ticked in the review step."""
+        log, stage = self._helpers(job)
+        src_dir = self._source_dir(job)
+        meta = json.loads((src_dir / "source.json").read_text(encoding="utf-8"))
+        words = json.loads((src_dir / f"transcript.{job.settings['whisper_model']}.json").read_text(encoding="utf-8"))["words"]
+        candidates = json.loads((job.dir / "candidates.json").read_text(encoding="utf-8"))
+        plans = []
+        for pick in picks:
+            idx = int(pick.get("index", 0))
+            if not 1 <= idx <= len(candidates):
+                continue
+            plan = dict(candidates[idx - 1])
+            for key in ("hook", "title"):
+                if str(pick.get(key) or "").strip():
+                    plan[key] = str(pick[key]).strip()[:200]
+            plans.append(plan)
+        if not plans:
+            raise RuntimeError("No moments were selected.")
+        log(f"You chose {len(plans)} of {len(candidates)} proposed moments.")
+        (job.dir / "plan.json").write_text(json.dumps(plans, indent=2), encoding="utf-8")
+        job.candidates = []
+        self._render_plans(job, meta, meta, words, plans, log, stage)
+
+    def _render_plans(self, job: Job, meta: dict, info: dict, words: list[dict], plans: list[dict], log, stage) -> None:
+        s = job.settings
+        cancelled = lambda: job.cancel_flag
+        up = stage("render")
+        fonts = job.dir / "fonts"
+        if not fonts.exists():
+            shutil.copytree(config.FONTS_DIR, fonts)
+        music = job.source.get("music")
+        job.clips = []
+        if s.get("logo_enabled") and not s.get("logo_path"):
+            logo = config.WORKSPACE / "brand" / "logo.png"
+            if logo.exists():  # keep a copy so later re-renders use the same logo
+                shutil.copy(logo, job.dir / "logo.png")
+                s["logo_path"] = str(job.dir / "logo.png")
+        for i, plan in enumerate(plans, start=1):
+            if s["caption_style"] == "none":
+                style = None
+            elif s["caption_style"] == "mix":
+                style = captions.MIX_ORDER[(i - 1) % len(captions.MIX_ORDER)]
+            else:
+                style = s["caption_style"]
+            n = len(plans)
+            result = render.render_clip(
+                meta["path"], info, plan, words, s, job.dir, i, style, music,
+                lambda p, msg, i=i: up((i - 1 + p) / n, f"{msg} ({i} of {n})"), cancelled, log)
+            job.clips.append(result)
+            job.save()
+        shutil.rmtree(fonts, ignore_errors=True)
+        _write_post_text(job)
+
+    def _run(self, job: Job) -> str | None:
+        s = job.settings
+        cancelled = lambda: job.cancel_flag
+        log, stage = self._helpers(job)
 
         caps = config.ffmpeg_capabilities()
         if not caps["found"]:
@@ -477,39 +559,29 @@ class JobManager:
         up = stage("analyze")
         ai = llm.current()
         up(0.1, "Finding the best moments" + (f" with {ai['name']}" if s["use_ai"] and ai["ready"] else ""))
-        plans, engine = analyze.analyze(sentences, meta["title"], s["num_clips"], s["min_len"], s["max_len"],
-                                        s["use_ai"], s["instructions"], log)
+        want = s["num_clips"]
+        limit = min(max(want * 2, want + 3), 14) if s["review_picks"] else want
+        plans, engine = analyze.analyze(sentences, meta["title"], want, s["min_len"], s["max_len"],
+                                        s["use_ai"], s["instructions"], log, limit)
         job.engine = engine
-        log(f"Selected {len(plans)} clips using {'offline scoring' if engine == 'offline' else engine}.")
-        (job.dir / "plan.json").write_text(json.dumps(plans, indent=2), encoding="utf-8")
+        log(f"Found {len(plans)} moments using {'offline scoring' if engine == 'offline' else engine}.")
 
-        # 4. Render ---------------------------------------------------------
-        up = stage("render")
-        fonts = job.dir / "fonts"
-        if not fonts.exists():
-            shutil.copytree(config.FONTS_DIR, fonts)
-        music = job.source.get("music")
-        job.clips = []
-        if s.get("logo_enabled") and not s.get("logo_path"):
-            logo = config.WORKSPACE / "brand" / "logo.png"
-            if logo.exists():  # keep a copy so later re-renders use the same logo
-                shutil.copy(logo, job.dir / "logo.png")
-                s["logo_path"] = str(job.dir / "logo.png")
-        for i, plan in enumerate(plans, start=1):
-            if s["caption_style"] == "none":
-                style = None
-            elif s["caption_style"] == "mix":
-                style = captions.MIX_ORDER[(i - 1) % len(captions.MIX_ORDER)]
-            else:
-                style = s["caption_style"]
-            n = len(plans)
-            result = render.render_clip(
-                meta["path"], info, plan, words, s, job.dir, i, style, music,
-                lambda p, msg, i=i: up((i - 1 + p) / n, f"{msg} ({i} of {n})"), cancelled, log)
-            job.clips.append(result)
-            job.save()
-        shutil.rmtree(fonts, ignore_errors=True)
-        _write_post_text(job)
+        if s["review_picks"] and len(plans) > 1:
+            (job.dir / "candidates.json").write_text(json.dumps(plans, indent=2), encoding="utf-8")
+            job.candidates = [{
+                "index": i, "title": p["title"], "titles": p.get("titles") or [p["title"]],
+                "hook": p.get("hook", ""), "hooks": p.get("hooks") or [],
+                "score": p.get("score", 0), "scores": p.get("scores") or {}, "reason": p.get("reason", ""),
+                "start": round(p["start"], 1), "end": round(p["end"], 1), "duration": round(p["end"] - p["start"], 1),
+                "text": " ".join(w["w"] for w in words[p["w0"]:p["w1"] + 1])[:420],
+                "selected": i <= want,
+            } for i, p in enumerate(plans, start=1)]
+            job.progress = 0.48
+            return "review"
+
+        (job.dir / "plan.json").write_text(json.dumps(plans, indent=2), encoding="utf-8")
+        self._render_plans(job, meta, info, words, plans, log, stage)
+        return None
 
 
 def _write_post_text(job: Job) -> None:

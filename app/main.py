@@ -97,6 +97,7 @@ def ai_providers():
         per = saved.get(key, {})
         out[key] = {"name": preset["name"], "key_url": preset.get("key_url", ""), "local": bool(preset.get("local")),
                     "default_model": preset.get("model", ""), "default_url": preset.get("base_url", ""),
+                    "keyless": bool(preset.get("keyless")),
                     "model": per.get("model") or preset.get("model", ""),
                     "base_url": per.get("base_url") or preset.get("base_url", ""),
                     "has_key": bool(per.get("api_key")) if key != "claude" else bool(config.get_api_key())}
@@ -124,6 +125,26 @@ def ai_test():
         return {"ok": False, "message": str(exc)[:500]}
 
 
+@app.get("/api/ai/ollama")
+def ai_ollama(refresh: int = 0):
+    return llm.ollama_status(force=bool(refresh))
+
+
+@app.post("/api/ai/ollama/start")
+def ai_ollama_start():
+    return llm.start_ollama()
+
+
+@app.post("/api/ai/autopick")
+def ai_autopick():
+    try:
+        result = llm.find_working_model()
+    except Exception as exc:
+        return {"ok": False, "model": "", "tried": [], "error": str(exc)[:300]}
+    result["status"] = config.system_status()
+    return result
+
+
 @app.get("/api/log")
 def get_log(lines: int = 300):
     try:
@@ -148,11 +169,9 @@ def ai_models():
     if cur["provider"] == "claude":
         return {"models": list(config.CLAUDE_MODELS)}
     try:
-        names = llm.list_models(cur)
-        # Hide models that cannot do this job (speech, images, embeddings, live audio).
-        skip = ("tts", "image", "embedding", "audio", "live", "veo", "lyria", "imagen", "aqa", "banana", "robotics",
-                "computer-use", "deep-research", "whisper", "guard")
-        return {"models": [n for n in names if not any(x in n.lower() for x in skip)]}
+        if cur["provider"] == "ollama":
+            return {"models": [m["name"] for m in llm.ollama_status(force=True)["models"]]}
+        return {"models": llm.usable_models(llm.list_models(cur))}
     except Exception as exc:
         return {"models": [], "error": str(exc)[:300]}
 
@@ -241,6 +260,14 @@ def get_job(job_id: str):
     if not job:
         raise HTTPException(404, "Job not found")
     return job.to_dict()
+
+
+@app.post("/api/jobs/{job_id}/render")
+def render_selected(job_id: str, payload: dict):
+    picks = payload.get("picks") if isinstance(payload.get("picks"), list) else []
+    if not manager.render_selected(job_id, picks):
+        raise HTTPException(409, "This run is not waiting for a selection, or nothing was selected.")
+    return manager.get(job_id).to_dict()
 
 
 @app.post("/api/jobs/{job_id}/cancel")
@@ -351,6 +378,10 @@ def main() -> None:
     port = int(os.environ.get("CLIPFORGE_PORT", "8765"))
     if os.environ.get("CLIPFORGE_NO_BROWSER") != "1":
         threading.Timer(1.2, lambda: webbrowser.open(f"http://{host}:{port}")).start()
+    try:
+        llm.auto_configure()
+    except Exception as exc:
+        config.applog(f"[ai] Ollama detection failed: {exc}")
     report = config.system_report()
     config.applog("[system] " + ", ".join(f"{k}={v}" for k, v in report.items()))
     if config.msvc_runtime_old():

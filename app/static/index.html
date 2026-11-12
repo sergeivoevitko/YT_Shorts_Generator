@@ -162,6 +162,7 @@
 
     <div class="card">
       <h2>8. Analysis</h2>
+      <label class="check only-clips"><input type="checkbox" id="review_picks"> Let me choose which moments to render (shows more options first)</label>
       <label class="check"><input type="checkbox" id="use_ai"> <span id="useAiLabel">Let the AI pick the moments and write the hooks</span></label>
       <p class="hint" id="aiHint"></p>
       <label>Speech recognition</label>
@@ -193,6 +194,17 @@
     </div>
 
     <p class="card warnbox" id="aiWarn" hidden></p>
+    <div class="card" id="reviewCard" hidden>
+      <div class="row between wrap">
+        <h2 id="reviewTitle">Choose your clips</h2>
+        <div class="row">
+          <button class="ghost danger" id="reviewCancel">Cancel</button>
+          <button class="primary small" id="reviewGo">Render selected</button>
+        </div>
+      </div>
+      <p class="hint">Tick the moments you want. You can pick the on-screen hook and the title for each one. Nothing is rendered until you press Render selected.</p>
+      <div id="reviewList"></div>
+    </div>
     <div id="results" hidden>
       <div class="row between wrap">
         <h2 id="resultsTitle"></h2>
@@ -236,7 +248,10 @@
   <select id="model"></select>
   <input type="text" id="modelText" list="modelList" autocomplete="off" placeholder="model name">
   <datalist id="modelList"></datalist>
+  <p class="hint" id="ollamaInfo" hidden></p>
   <div class="row wrap" style="margin-top:12px">
+    <button type="button" class="ghost" id="startOllama" hidden>Start Ollama</button>
+    <button type="button" class="ghost" id="autoPick">Find a working model</button>
     <button type="button" class="ghost" id="loadModels">Show available models</button>
     <button type="button" class="ghost" id="testAi">Save and test</button>
   </div>
@@ -261,8 +276,8 @@
 <dialog id="editDlg" class="wide">
   <h2>Edit clip</h2>
   <div class="grid2">
-    <div><label>Hook text (first seconds)</label><input type="text" id="edHook" maxlength="120"></div>
-    <div><label>Title</label><input type="text" id="edTitle" maxlength="120"></div>
+    <div><label>Hook text (first seconds)</label><input type="text" id="edHook" maxlength="120" list="edHookList"><datalist id="edHookList"></datalist></div>
+    <div><label>Title</label><input type="text" id="edTitle" maxlength="120" list="edTitleList"><datalist id="edTitleList"></datalist></div>
   </div>
   <label>Post caption</label>
   <textarea id="edDesc" rows="2" maxlength="300"></textarea>

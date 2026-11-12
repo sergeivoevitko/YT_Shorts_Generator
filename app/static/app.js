@@ -24,7 +24,7 @@ const REFRAME = {
   center: ["Center crop", "Crops the middle of the frame. Best when the subject never leaves the center."],
   blur: ["Fit + blur", "Keeps the whole frame visible over a blurred copy of itself. Best for screen recordings and gameplay."],
 };
-const STAGES = [["download", "Download"], ["transcribe", "Transcribe"], ["analyze", "Find moments"], ["render", "Edit + render"]];
+const STAGES = [["download", "Download"], ["transcribe", "Transcribe"], ["analyze", "Find moments"], ["review", "Your choice"], ["render", "Edit + render"]];
 const STORY_STAGES = [["footage", "Review footage"], ["story", "Write story"], ["voice", "Voiceover"], ["render", "Edit + render"]];
 const MODES = [["clips", "YouTube to shorts"], ["story", "My footage + story"]];
 const RES_SHORT = { "720p": 720, "1080p": 1080, "1440p": 1440, "4k": 2160 };
@@ -167,7 +167,7 @@ async function init() {
   bind("silence_gap", "silence_gap", "num", "gapVal", (v) => Number(v).toFixed(2) + " s");
   bind("zoom_amount", "zoom_amount", "num", "zoomVal", (v) => "+" + Math.round((v - 1) * 100) + "%");
   bind("music_volume", "music_volume", "num", "musicVal", (v) => Math.round(v * 100) + "%");
-  for (const id of ["remove_silence", "zooms", "progress_bar", "normalize_audio", "use_ai", "remove_fillers", "emojis", "sfx", "logo_enabled"]) bind(id, id, "check");
+  for (const id of ["remove_silence", "zooms", "progress_bar", "normalize_audio", "use_ai", "remove_fillers", "emojis", "sfx", "logo_enabled", "review_picks"]) bind(id, id, "check");
   bind("sfx_volume", "sfx_volume", "num", "sfxVal", (v) => Math.round(v * 100) + "%");
   bind("logo_scale", "logo_scale", "num", "logoScaleVal", (v) => Math.round(v * 100) + "% of width");
   bind("logo_opacity", "logo_opacity", "num", "logoOpVal", (v) => Math.round(v * 100) + "%");
@@ -182,6 +182,16 @@ async function init() {
   fileInput("music", "musicName", "clearMusic", "choose an audio file");
   $("go").onclick = () => submit(false);
   $("remix").onclick = () => submit(true);
+  $("reviewCancel").onclick = () => currentJob && api(`/api/jobs/${currentJob}/cancel`, { method: "POST" }).then(() => watch(currentJob));
+  $("reviewGo").onclick = async () => {
+    const picks = [...document.querySelectorAll("#reviewList .cand")].filter((row) => row.querySelector("input[type=checkbox]").checked)
+      .map((row) => ({ index: Number(row.dataset.index), hook: row.querySelector(".hookSel").value, title: row.querySelector(".titleSel").value }));
+    if (!picks.length) { alert("Tick at least one moment."); return; }
+    try {
+      await api(`/api/jobs/${currentJob}/render`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ picks }) });
+      watch(currentJob);
+    } catch (err) { alert(err.message); }
+  };
   $("cancel").onclick = () => currentJob && api(`/api/jobs/${currentJob}/cancel`, { method: "POST" });
   $("openFolder").onclick = async () => {
     const r = await api(`/api/jobs/${currentJob}/open`, { method: "POST" });
@@ -204,7 +214,7 @@ async function init() {
   };
 
   const jobs = await loadHistory();
-  const active = jobs.find((j) => j.status === "running" || j.status === "queued");
+  const active = jobs.find((j) => ["running", "queued", "review"].includes(j.status));
   if (active) watch(active.id);
 }
 
@@ -219,8 +229,11 @@ function aiSettings() {
     $("model").hidden = !claude;
     $("modelText").hidden = claude;
     $("urlRow").hidden = claude || !(custom || p.local);
-    $("keyRow").hidden = p.local;
+    $("keyRow").hidden = p.local || p.keyless;
     $("loadModels").hidden = claude;
+    $("autoPick").hidden = claude || key === "ollama" || key === "lmstudio";
+    $("ollamaInfo").hidden = $("startOllama").hidden = true;
+    if (key === "ollama") showOllama(false);
     if (claude) $("model").value = p.model; else $("modelText").value = p.model;
     $("baseUrl").value = p.base_url || "";
     $("apiKey").value = "";
@@ -232,8 +245,57 @@ function aiSettings() {
     hint.replaceChildren(claude ? "Best quality. Paid by usage, a few cents per video. "
       : p.local ? "Runs on this PC: free, private, no limits. Needs the program installed and a model downloaded. Use a general chat model (for example qwen2.5:7b, llama3.1:8b or gemma3); models made for coding pick poor moments. "
       : custom ? "Any service with an OpenAI-compatible API. Enter its address, key and model name. "
+      : p.keyless ? "Free and needs no account or key. Quality and speed vary, and your transcripts are sent to this provider. "
       : "Free within daily limits, no credit card. Your transcripts are sent to this provider. ");
     if (p.key_url) hint.append(el("a", { href: p.key_url, target: "_blank", rel: "noopener", textContent: p.local ? "Download it here" : "Get a key here", style: "color:var(--accent)" }));
+  };
+  const showOllama = async (refresh) => {
+    const info = $("ollamaInfo");
+    info.hidden = false;
+    info.textContent = "Looking for Ollama on this PC...";
+    let o;
+    try { o = await api("/api/ai/ollama" + (refresh ? "?refresh=1" : "")); } catch (e) { info.textContent = "Could not check for Ollama."; return; }
+    if (prov() !== "ollama") return;
+    $("startOllama").hidden = !(o.installed && !o.running);
+    if (!o.installed) { info.textContent = "Ollama was not found on this PC. Install it from ollama.com, then download a model."; return; }
+    if (!o.running) { info.textContent = "Ollama is installed but not running. Press Start Ollama."; return; }
+    const general = o.models.filter((m) => m.general);
+    $("modelList").replaceChildren(...o.models.map((m) => el("option", { value: m.name, label: `${m.params || "?"}B, ${m.gb} GB${m.name === o.recommended ? " (recommended)" : m.general ? "" : " (not suited)"}` })));
+    const names = o.models.map((m) => m.name);
+    const current = $("modelText").value.trim();
+    let note = `Ollama ${o.version} is running with ${o.models.length} model${o.models.length === 1 ? "" : "s"}: ${names.join(", ") || "none"}. `;
+    if (o.recommended) {
+      if (!names.includes(current) || !general.some((m) => m.name === current)) {
+        $("modelText").value = o.recommended;
+        note += `Selected ${o.recommended}, the best fit for this job. Press Save to keep it.`;
+      } else if (current !== o.recommended) note += `${o.recommended} would be a better fit than ${current}.`;
+      else note += `${current} is the best fit of these.`;
+    } else {
+      note += `None of these is a general chat model (coding and embedding models pick poor moments). Run "ollama pull ${o.suggest_pull || "qwen2.5:7b"}" in a terminal, then reopen this window.`;
+    }
+    info.textContent = note;
+  };
+  $("startOllama").onclick = async () => {
+    $("ollamaInfo").textContent = "Starting Ollama...";
+    try { await api("/api/ai/ollama/start", { method: "POST" }); } catch (e) { /* shown below */ }
+    showOllama(true);
+  };
+  $("autoPick").onclick = async () => {
+    $("testResult").style.color = "";
+    $("testResult").textContent = "Trying this provider's models one by one, this can take a minute...";
+    try {
+      await saveNow();
+      const r = await api("/api/ai/autopick", { method: "POST" });
+      if (r.ok) {
+        $("modelText").value = r.model;
+        cfg.status = r.status; providers = await api("/api/ai/providers"); pills(); refreshHints();
+        $("testResult").textContent = `Works. ${r.model} answered and was selected` + (r.tried.length ? ` (after ${r.tried.length} that did not).` : ".");
+        $("testResult").style.color = "var(--good)";
+      } else {
+        $("testResult").textContent = r.error || ("No model answered. " + (r.tried || []).map((t) => `${t.model}: ${t.error}`).join(" | ").slice(0, 500));
+        $("testResult").style.color = "var(--bad)";
+      }
+    } catch (err) { $("testResult").textContent = err.message; $("testResult").style.color = "var(--bad)"; }
   };
   const collect = () => {
     const key = prov();
@@ -348,6 +410,8 @@ async function openEditor(jobId, index) {
   try { data = await api(`/api/jobs/${jobId}/clips/${index}/words`); } catch (err) { alert(err.message); return; }
   ed = { job: jobId, index, w0: data.w0, w1: data.w1, sel: null, words: data.words.map((w) => Object.assign(w, { was: w.w })) };
   $("edHook").value = data.hook; $("edTitle").value = data.title; $("edDesc").value = data.description;
+  $("edHookList").replaceChildren(...(data.hooks || []).map((h) => el("option", { value: h.text, label: h.type })));
+  $("edTitleList").replaceChildren(...(data.titles || []).map((t) => el("option", { value: t })));
   $("edErr").textContent = "";
   drawEditor();
   $("editDlg").showModal();
@@ -422,7 +486,7 @@ function watch(id) {
     try { job = await api(`/api/jobs/${id}`); } catch (e) { return; }
     if (currentJob !== id) return;
     render(job);
-    if (!["queued", "running"].includes(job.status)) { clearInterval(pollTimer); loadHistory(); }
+    if (!["queued", "running"].includes(job.status)) { clearInterval(pollTimer); pollTimer = null; loadHistory(); }
   };
   tick();
   pollTimer = setInterval(tick, 1200);
@@ -430,8 +494,11 @@ function watch(id) {
 
 function render(job) {
   const busy = ["queued", "running"].includes(job.status);
+  const review = job.status === "review";
   $("empty").hidden = true;
-  $("jobCard").hidden = job.status === "done" && !job.message.startsWith("Re-render failed");
+  $("jobCard").hidden = review || (job.status === "done" && !job.message.startsWith("Re-render failed"));
+  $("reviewCard").hidden = !review;
+  if (review) drawReview(job);
   $("go").disabled = busy;
   $("go").textContent = busy ? "Working..." : goLabel();
   $("cancel").hidden = !busy;
@@ -439,7 +506,7 @@ function render(job) {
   const stages = job.kind === "story" ? STORY_STAGES : STAGES;
   const at = stages.findIndex(([k]) => k === job.stage);
   $("steps").replaceChildren(...stages.map(([k, label], i) =>
-    el("div", { className: "step" + (busy && i === at ? " active" : (i < at || job.status === "done") ? " done" : ""), textContent: label })));
+    el("div", { className: "step" + ((busy || review) && i === at ? " active" : (i < at || job.status === "done") ? " done" : ""), textContent: label })));
   $("barFill").style.width = Math.round(job.progress * 100) + "%";
   $("jobMsg").textContent = job.status === "error" ? "" : `${job.message}${busy ? ` (${Math.round(job.progress * 100)}%)` : ""}`;
   $("jobErr").textContent = job.status === "error" ? job.error : "";
@@ -467,6 +534,48 @@ function render(job) {
       box.replaceChildren(...clips.map((c) => clipCard(job.id, c)));
     }
   }
+}
+
+function drawReview(job) {
+  const box = $("reviewList");
+  if (box.dataset.job === job.id && box.childElementCount === job.candidates.length) return;  // keep the user's ticks while polling
+  box.dataset.job = job.id;
+  const by = !job.engine || job.engine === "offline" ? "offline scoring" : job.engine;
+  $("reviewTitle").textContent = `Choose your clips: ${job.candidates.length} moments found by ${by}`;
+  const mins = (t) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}`;
+  const count = () => {
+    const n = box.querySelectorAll("input[type=checkbox]:checked").length;
+    $("reviewGo").textContent = `Render selected (${n})`;
+    $("reviewGo").disabled = n === 0;
+  };
+  box.replaceChildren(...job.candidates.map((c) => {
+    const tick = el("input", { type: "checkbox", checked: !!c.selected });
+    const row = el("div", { className: "cand" + (c.selected ? "" : " off") });
+    row.dataset.index = c.index;
+    tick.onchange = () => { row.classList.toggle("off", !tick.checked); count(); };
+    const hooks = c.hooks && c.hooks.length ? c.hooks : [{ type: "", text: c.hook }];
+    const hookSel = el("select", { className: "hookSel" }, hooks.map((h) =>
+      el("option", { value: h.text, textContent: (h.type ? h.type[0].toUpperCase() + h.type.slice(1) + ": " : "") + h.text })));
+    const titles = c.titles && c.titles.length ? c.titles : [c.title];
+    const titleSel = el("select", { className: "titleSel" }, titles.map((t) => el("option", { value: t, textContent: t })));
+    const cls = c.score >= 75 ? "" : c.score >= 55 ? " mid" : " low";
+    row.append(tick, el("div", { className: "cbody" }, [
+      el("div", { className: "meta" }, [
+        el("span", { className: "score" + cls, textContent: `Score ${c.score}` }),
+        el("span", { textContent: `${Math.round(c.duration)}s` }),
+        el("span", { textContent: `${mins(c.start)} to ${mins(c.end)}` }),
+        ...Object.entries(c.scores || {}).filter(([, v]) => v > 0).map(([k, v]) => el("span", { textContent: `${k} ${v}` })),
+      ]),
+      el("div", { className: "grid2" }, [
+        el("div", {}, [el("label", { textContent: "Title" }), titleSel]),
+        el("div", {}, [el("label", { textContent: "Hook text on screen" }), hookSel]),
+      ]),
+      el("div", { className: "quote", textContent: "\u201c" + c.text + (c.text.length >= 420 ? "..." : "") + "\u201d" }),
+      el("div", { className: "why", textContent: c.reason }),
+    ]));
+    return row;
+  }));
+  count();
 }
 
 function clipCard(jobId, c) {
