@@ -90,6 +90,7 @@ function refreshHints() {
     (short > 1080 ? " Sizes above 1080p are upscaled unless the source video is that sharp, and render much slower." : "");
   const story = settings.mode === "story";
   $("compCustomRow").hidden = settings.comp_theme !== "custom";
+  $("twoRow").hidden = settings.reframe !== "smart";
   const cloud = settings.speech_engine === "groq";
   $("whisperRow").hidden = cloud;
   $("speechHint").textContent = cloud
@@ -169,7 +170,7 @@ async function init() {
   $("whisper_model").replaceChildren(...Object.entries(cfg.whisper_models).map(([k, v]) => el("option", { value: k, textContent: v })));
   $("model").replaceChildren(...Object.entries(cfg.claude_models).map(([k, v]) => el("option", { value: k, textContent: v })));
 
-  for (const id of ["speech_engine", "encoder", "resolution", "fps", "quality", "caption_position", "hook_style", "whisper_model", "instructions"]) bind(id, id);
+  for (const id of ["two_people", "speech_engine", "encoder", "resolution", "fps", "quality", "caption_position", "hook_style", "whisper_model", "instructions"]) bind(id, id);
   bind("num_clips", "num_clips", "num", "numClipsVal");
   bind("min_len", "min_len", "num"); bind("max_len", "max_len", "num"); bind("hook_seconds", "hook_seconds", "num");
   bind("caption_scale", "caption_scale", "num", "capScaleVal", (v) => Math.round(v * 100) + "%");

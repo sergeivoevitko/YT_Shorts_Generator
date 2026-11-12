@@ -327,7 +327,7 @@ def render_clip(src: str, info: dict, clip: dict, all_words: list[dict], setting
     progress(0.02, f"Clip {index}: tracking faces")
     plan = reframe.plan_crop(src, start, src_dur, info["width"], info["height"], aw, ah, settings["reframe"],
                              lambda p: progress(0.02 + p * 0.18, f"Clip {index}: tracking faces"),
-                             info.get("fps", 30.0), fps)
+                             info.get("fps", 30.0), fps, settings.get("two_people", "split"))
 
     segs = [(0, int(round(src_dur * fps)))]
     fillers = sum(1 for w in words if w["cut"])
@@ -395,6 +395,20 @@ def render_clip(src: str, info: dict, clip: dict, all_words: list[dict], setting
             f"boxblur=luma_radius={max(8, width // 40)}:luma_power=2,eq=brightness=-0.08[bg];"
             f"[fga]scale={width}:{height}:force_original_aspect_ratio=decrease[fg];"
             f"[bg][fg]overlay=(W-w)/2:(H-h)/2[v0]")
+        head, v = "[v0]", []
+    elif plan.get("split"):
+        # Two people on screen: show both, one above the other, during those shots, and the
+        # normal single framing the rest of the time.
+        sp = plan["split"]
+        half = height // 2 // 2 * 2
+        chains.append(
+            f"[0:v]fps={fps_s},split=3[fs0][fs1][fs2];"
+            f"[fs0]crop={plan['cw']}:{plan['ch']}:x='{plan['x_expr']}':y={plan['y']},"
+            f"scale={width}:{height}:flags=lanczos,setsar=1[fbase];"
+            f"[fs1]crop={sp['pw']}:{sp['ph']}:x='{sp['ax']}':y='{sp['ay']}',scale={width}:{half}:flags=lanczos,setsar=1[fpa];"
+            f"[fs2]crop={sp['pw']}:{sp['ph']}:x='{sp['bx']}':y='{sp['by']}',scale={width}:{height - half}:flags=lanczos,setsar=1[fpb];"
+            f"[fpa][fpb]vstack,drawbox=x=0:y={half - 2}:w=iw:h=4:color=black:t=fill[fduo];"
+            f"[fbase][fduo]overlay=enable='{sp['enable']}'[v0]")
         head, v = "[v0]", []
     else:
         head = "[0:v]"
@@ -514,7 +528,11 @@ def render_clip(src: str, info: dict, clip: dict, all_words: list[dict], setting
                    cwd=str(job_dir), capture_output=True)
     (job_dir / ass_name).unlink(missing_ok=True)
     log(f"Clip {index} rendered: {out_dur:.1f}s, style {style_key or 'no captions'}, {len(segs) - 1} cuts "
-        f"({fillers} filler words), {plan['pieces']} camera positions, {len(cues)} emojis, {len(events)} sound effects"
+        f"({fillers} filler words), {plan['pieces']} camera positions"
+        + (f", {plan['duo_shots']} two-person shots " + ("shown as split screen" if plan.get("split") else
+           f"with {plan['speaker_cuts']} cuts between speakers" if settings.get("two_people") == "speaker" else "")
+           if plan.get("duo_shots") else "")
+        + f", {len(cues)} emojis, {len(events)} sound effects"
         + (f", cold open {lead:.1f}s" if teaser else "") + (f", version {clip['variant']}" if clip.get("variant") else "") + ".")
     return {
         "index": index, "file": out_name, "thumb": thumb, "duration": round(out_dur, 2),

@@ -17,7 +17,7 @@ from .pipeline import analyze, captions, compile as comp, download, footage, llm
 DEFAULTS = {
     "aspect": "9:16", "resolution": "1080p", "fps": "source", "quality": "balanced", "encoder": "auto",
     "num_clips": 5, "min_len": 20, "max_len": 60,
-    "reframe": "smart",
+    "reframe": "smart", "two_people": "split",
     "caption_style": "mix", "caption_position": "lower", "caption_scale": 1.0,
     "hook_style": "banner", "hook_seconds": 3.5,
     "remove_silence": True, "silence_gap": 0.5,
@@ -68,6 +68,7 @@ def clean_settings(raw: dict) -> dict:
     s["min_len"] = _num(s["min_len"], 5, 170, 20)
     s["max_len"] = _num(s["max_len"], s["min_len"] + 5, 180, max(60, s["min_len"] + 5))
     s["reframe"] = s["reframe"] if s["reframe"] in ("smart", "center", "blur") else "smart"
+    s["two_people"] = s["two_people"] if s["two_people"] in ("split", "speaker", "mix", "one") else "split"
     if s["caption_style"] not in captions.STYLES and s["caption_style"] not in ("mix", "none"):
         s["caption_style"] = "mix"
     s["caption_position"] = s["caption_position"] if s["caption_position"] in ("lower", "center", "top") else "lower"

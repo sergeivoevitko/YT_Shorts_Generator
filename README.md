@@ -119,6 +119,7 @@ your transcripts are sent to that provider; with Ollama or LM Studio nothing lea
 | Setting | Effect |
 | --- | --- |
 | Follow faces | Detects the speaker and keeps them in frame, cutting or gliding when they move |
+| Two people on screen | For podcasts and interviews: show both in a split screen (each zoomed in, one above the other), alternate split screen and close-ups, cut to whoever is talking (experimental), or stay on one person |
 | Fit + blur | Shows the whole frame over a blurred background (for gameplay, screen recordings) |
 | Cut out pauses | Removes silences longer than the threshold, which tightens the pacing |
 | Punch-in zooms | Alternates a slight zoom on new sentences to keep the picture moving |
