@@ -83,6 +83,10 @@ def set_settings(payload: dict):
             url = str(payload.get("base_url") or "").strip().rstrip("/")
             if url and not re.match(r"^https?://", url):
                 raise HTTPException(400, "The server address must start with http:// or https://")
+            # People paste the full endpoint or the bare site address; both should work.
+            url = re.sub(r"/(chat/completions|completions|models)$", "", url).rstrip("/")
+            if url and re.fullmatch(r"https?://[^/]+", url) and provider == "custom":
+                url += "/v1"
             per["base_url"] = url
         allp[provider] = per
         data["providers"] = allp

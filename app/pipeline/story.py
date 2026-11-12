@@ -118,6 +118,20 @@ class StoryBatch(BaseModel):
     stories: List[Story]
 
 
+class LooseStory(BaseModel):
+    script: str
+    title: str = "Untitled"
+    hook: str = ""
+    description: str = ""
+    hashtags: List[str] = []
+    emphasis_words: List[str] = []
+    emojis: List[EmojiCue] = []
+
+
+class LooseStoryBatch(BaseModel):
+    stories: List[LooseStory]
+
+
 def _clean_script(text: str) -> str:
     text = text.replace("\r", "").replace("“", "").replace("”", "").replace('"', "")
     text = re.sub(r"[*_#>`]", "", text)
@@ -180,7 +194,7 @@ def write_with_provider(n: int, theme: str, tone: str, seconds: float, direction
             f"Stay within ten percent of that word count.\n")
     if direction.strip():
         user += f"Extra direction from the creator: {direction.strip()}\n"
-    batch = llm.chat_json(SYSTEM_PROMPT, user, StoryBatch, STORY_SHAPE, log)
+    batch = llm.chat_json(SYSTEM_PROMPT, user, LooseStoryBatch, STORY_SHAPE, log, strict=StoryBatch)
     ai = llm.current()
     log(f"{ai['name']} ({ai['model']}) wrote {len(batch.stories)} stories.")
     return [s.model_dump() for s in batch.stories]

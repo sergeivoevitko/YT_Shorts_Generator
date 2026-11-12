@@ -104,6 +104,33 @@ class VideoPlan(BaseModel):
     clips: List[ClipPlan]
 
 
+class LooseClip(BaseModel):
+    """What a free or local model must return at minimum. Smaller models sometimes drop an
+    optional field; that should cost the field, not the whole analysis."""
+    start_sentence: int
+    end_sentence: int
+    title: str = ""
+    titles: List[str] = []
+    hook: str = ""
+    hooks: List[HookOption] = []
+    header: str = ""
+    teaser_sentence: int = -1
+    description: str = ""
+    hashtags: List[str] = []
+    emphasis_words: List[str] = []
+    emojis: List[EmojiCue] = []
+    hook_score: int = 0
+    flow_score: int = 0
+    value_score: int = 0
+    trend_score: int = 0
+    score: int = 60
+    reason: str = ""
+
+
+class LooseVideoPlan(BaseModel):
+    clips: List[LooseClip]
+
+
 def _transcript_text(sentences: list[dict]) -> str:
     return "\n".join(f"[{s['i']}] {s['s']:.1f}-{s['e']:.1f} {s['text']}" for s in sentences)
 
@@ -180,6 +207,7 @@ def analyze_with_provider(sentences: list[dict], title: str, n: int, min_len: fl
         size += line
     per_chunk = n if len(chunks) == 1 else max(1, -(-n * 3 // (2 * len(chunks))))
     found: list[dict] = []
+    failed = 0
     for i, part in enumerate(chunks, start=1):
         user = (f"Video title: {title}\nNumber of clips wanted: {per_chunk}\n"
                 f"Each clip must last between {min_len:.0f} and {max_len:.0f} seconds.\n")
@@ -188,11 +216,21 @@ def analyze_with_provider(sentences: list[dict], title: str, n: int, min_len: fl
         if instructions.strip():
             user += f"Extra direction from the creator: {instructions.strip()}\n"
         user += f"\nTranscript:\n{_transcript_text(part)}"
-        plan = llm.chat_json(SYSTEM_PROMPT, user, VideoPlan, CLIP_SHAPE, log)
+        try:
+            plan = llm.chat_json(SYSTEM_PROMPT, user, LooseVideoPlan, CLIP_SHAPE, log, strict=VideoPlan)
+        except Exception as exc:
+            failed += 1
+            log(f"{ai['name']}: part {i} of {len(chunks)} failed ({str(exc)[:160]}).")
+            # Give up early if the first two parts both fail: the rest will fail the same way.
+            if failed >= 2 and not found:
+                raise
+            continue
         lo, hi = part[0]["i"], part[-1]["i"]
         found += [c.model_dump() for c in plan.clips if lo <= c.start_sentence <= c.end_sentence <= hi]
         if len(chunks) > 1:
             log(f"{ai['name']}: part {i} of {len(chunks)} analyzed, {len(plan.clips)} candidates.")
+    if not found:
+        raise RuntimeError("no part of the transcript produced usable clips")
     found.sort(key=lambda c: -c["score"])
     log(f"{ai['name']} ({ai['model']}) proposed {len(found)} clips.")
     return found
@@ -349,6 +387,8 @@ def _fit(clip: dict, sentences: list[dict], min_len: float, max_len: float) -> d
     titles = [str(t).strip()[:100] for t in clip.get("titles") or [] if str(t).strip()][:4]
     if not str(clip.get("title", "")).strip() and titles:
         clip["title"] = titles[0]
+    if not str(clip.get("title", "")).strip():
+        clip["title"] = _short_title(sentences[a]["text"], 7)
     clip["titles"] = titles or [clip["title"]]
     clip["header"] = " ".join(str(clip.get("header") or "").split()[:6])[:44]
     try:

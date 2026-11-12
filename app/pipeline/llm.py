@@ -308,12 +308,15 @@ def _ollama_chat(system: str, user: str, cfg: dict, want_json: bool, max_tokens:
     Ollama silently cuts long prompts from the front, which removes the instructions. It
     also accepts a JSON schema that the answer is forced to follow."""
     host = re.sub(r"/v1/?$", "", cfg["base_url"])
-    out_tokens = min(max_tokens, 3000)
+    out_tokens = min(max_tokens, 4096)
     need = int((len(system) + len(user)) / 3.0) + out_tokens + 256
     num_ctx = next(n for n in (4096, 8192, 16384, 32768, 65536) if n >= need or n == 65536)
     payload = {"model": cfg["model"], "stream": False,
                "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
-               "options": {"num_ctx": max(num_ctx, 8192), "num_predict": out_tokens, "temperature": 0.4}}
+               "options": {"num_ctx": max(num_ctx, 8192), "num_predict": out_tokens, "temperature": 0.4},
+               # "Thinking" models (gemma4, qwen3, deepseek-r1...) write their reasoning first and can
+               # spend the whole answer allowance on it, leaving the answer empty. Turn that off.
+               "think": False}
     # Answer schemas need Ollama 0.5 or newer; older versions only know plain JSON mode.
     version = ollama_status().get("version", "")
     if schema is not None and (not version or _version_tuple(version) >= (0, 5)):
@@ -326,6 +329,10 @@ def _ollama_chat(system: str, user: str, cfg: dict, want_json: bool, max_tokens:
                   f"num_ctx={payload['options']['num_ctx']} schema={'yes' if schema is not None else 'no'}")
     try:
         resp = httpx.post(url, json=payload, timeout=httpx.Timeout(read_timeout, connect=15.0))
+        if resp.status_code == 400 and "think" in resp.text.lower():
+            # Older Ollama versions and some models reject the option; they do not think anyway.
+            payload.pop("think", None)
+            resp = httpx.post(url, json=payload, timeout=httpx.Timeout(read_timeout, connect=15.0))
     except httpx.ConnectError as exc:
         say(f"could not connect to {url}: {exc}")
         raise RuntimeError(f"Could not connect to Ollama at {host}. Is Ollama running on this PC?") from exc
@@ -346,7 +353,13 @@ def _ollama_chat(system: str, user: str, cfg: dict, want_json: bool, max_tokens:
     if seen and seen < (len(system) + len(user)) / 6.5:
         say(f"Ollama read only {seen} tokens of a {len(system) + len(user)} character request; "
             "the model's context window is too small, so part of the request was cut off.")
-    return (data.get("message") or {}).get("content") or ""
+    message = data.get("message") or {}
+    content = message.get("content") or ""
+    if not content.strip() and message.get("thinking"):
+        say(f"Ollama model {cfg['model']} spent its whole answer on thinking and returned no answer "
+            f"({data.get('eval_count', '?')} tokens). Looking for the answer inside its reasoning.")
+        content = str(message["thinking"])
+    return content
 
 
 def chat(system: str, user: str, cfg: dict | None = None, want_json: bool = True, max_tokens: int = 8000,
@@ -424,15 +437,18 @@ def _extract_json(text: str) -> dict:
 
 
 def chat_json(system: str, user: str, schema: Type[BaseModel], shape: str,
-              log: Callable[[str], None] | None = None, max_tokens: int = 8000) -> BaseModel:
-    """Chat completion parsed and validated against a pydantic model, with one repair attempt."""
+              log: Callable[[str], None] | None = None, max_tokens: int = 8000,
+              strict: Type[BaseModel] | None = None) -> BaseModel:
+    """Chat completion parsed and validated against a pydantic model, with one repair attempt.
+    `schema` is what the answer must satisfy to be used (it can be forgiving about optional
+    fields); `strict` is the full shape sent to providers that can enforce one."""
     cfg = current()
     system = (system + "\n\nAnswer with one JSON object and nothing else, no markdown fences and no commentary. "
               "Use exactly this shape:\n" + shape)
     prompt = user
     error = ""
     for _ in range(2):
-        text = chat(system, prompt, cfg, True, max_tokens, log, schema=schema.model_json_schema())
+        text = chat(system, prompt, cfg, True, max_tokens, log, schema=(strict or schema).model_json_schema())
         try:
             return schema.model_validate(_extract_json(text))
         except (ValueError, ValidationError) as exc:
