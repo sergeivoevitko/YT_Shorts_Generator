@@ -39,6 +39,12 @@ believe), "problem" (names a pain the viewer has), "story" (drops the viewer int
 "proof" (a result or a number). Each must differ from the spoken first sentence and must not \
 spoil the payoff. Put the strongest first.
 - hook: the text of the first of those hooks.
+- header: 2 to 5 words that tell someone who lands in the middle what this clip is about, shown \
+as a small label for the whole clip (for example "Why diets fail" or "Landing on Mars").
+- teaser_sentence: the number of one sentence inside the clip, not one of its first two, that \
+would work as a cold open: played for two to three seconds before the clip starts, it must make \
+the viewer want the context. Choose a line that raises a question, never the line that resolves \
+it. Use -1 if no sentence qualifies.
 - description: a one or two sentence post caption. Only the first 125 characters are shown in \
 previews, so the point goes first.
 - hashtags: 3 to 5 relevant hashtags without the # sign.
@@ -80,6 +86,8 @@ class ClipPlan(BaseModel):
     title: str
     hooks: List[HookOption]
     hook: str
+    header: str
+    teaser_sentence: int
     description: str
     hashtags: List[str]
     emphasis_words: List[str]
@@ -149,7 +157,7 @@ def analyze_with_claude(sentences: list[dict], title: str, n: int, min_len: floa
 
 CLIP_SHAPE = """{"clips": [{"start_sentence": 12, "end_sentence": 19, "titles": ["...", "...", "..."], \
 "title": "...", "hooks": [{"type": "curiosity", "text": "..."}, {"type": "shock", "text": "..."}, \
-{"type": "story", "text": "..."}], "hook": "...", \
+{"type": "story", "text": "..."}], "hook": "...", "header": "...", "teaser_sentence": 16, \
 "description": "...", "hashtags": ["...", "..."], "emphasis_words": ["...", "..."], \
 "emojis": [{"word": "...", "emoji": "🔥"}], "hook_score": 80, "flow_score": 70, "value_score": 75, \
 "trend_score": 60, "score": 74, "reason": "..."}]}"""
@@ -258,8 +266,24 @@ def _short_title(text: str, limit: int = 8) -> str:
     return out + ("..." if len(words) > limit else "")
 
 
+def _pick_teaser(sentences: list[dict], i: int, j: int) -> int:
+    """A short, punchy sentence from the later part of the window, or -1."""
+    best, best_score = -1, 1.5
+    for k in range(i + 2, j + 1):
+        s = sentences[k]
+        dur = s["e"] - s["s"]
+        if not 1.0 <= dur <= 5.0 or s["s"] - sentences[i]["s"] < 4.0:
+            continue
+        words = re.findall(r"[a-z0-9']+", s["text"].lower())
+        score = 2.0 * ("?" in s["text"]) + 1.2 * ("!" in s["text"]) + len(_HOOK_WORDS.intersection(words)) \
+            + (0.8 if re.search(r"\d", s["text"]) else 0)
+        if score > best_score:
+            best, best_score = k, score
+    return best
+
+
 def analyze_heuristic(sentences: list[dict], n: int, min_len: float, max_len: float,
-                      taken: list[tuple[int, int]] | None = None) -> list[dict]:
+                      taken: list[tuple[int, int]] | None = None, title: str = "") -> list[dict]:
     target = (min_len + max_len) / 2
     candidates = []
     for i in range(len(sentences)):
@@ -292,6 +316,8 @@ def analyze_heuristic(sentences: list[dict], n: int, min_len: float, max_len: fl
             "emphasis_words": kws,
             "score": int(score),
             "scores": _sub_scores(sentences[i:j + 1]),
+            "header": " ".join(title.split()[:5]) if title else "",
+            "teaser_sentence": _pick_teaser(sentences, i, j),
             "reason": "Picked by offline scoring (strong opening words, dense speech, clean ending).",
         })
     return clips
@@ -324,6 +350,12 @@ def _fit(clip: dict, sentences: list[dict], min_len: float, max_len: float) -> d
     if not str(clip.get("title", "")).strip() and titles:
         clip["title"] = titles[0]
     clip["titles"] = titles or [clip["title"]]
+    clip["header"] = " ".join(str(clip.get("header") or "").split()[:6])[:44]
+    try:
+        t = int(clip.get("teaser_sentence", -1))
+    except (TypeError, ValueError):
+        t = -1
+    clip["teaser_sentence"] = t if a + 1 < t <= b else -1
     clip["score"] = max(0, min(int(clip.get("score", 50)), 100))
     if "hook_score" in clip:
         clip["scores"] = {k: max(0, min(int(clip.pop(f"{k}_score", 0)), 100)) for k in ("hook", "flow", "value", "trend")}
@@ -370,7 +402,7 @@ def analyze(sentences: list[dict], title: str, n: int, min_len: float, max_len: 
     fitted = fitted[:n]
 
     if engine == "offline":
-        fitted = analyze_heuristic(sentences, n, min_len, max_len)
+        fitted = analyze_heuristic(sentences, n, min_len, max_len, title=title)
     if not fitted:
         raise RuntimeError("Could not find any stretch of speech that fits the clip length you chose. "
                            "Try a shorter minimum length.")
@@ -380,6 +412,9 @@ def analyze(sentences: list[dict], title: str, n: int, min_len: float, max_len: 
         clip["end"] = sentences[clip["end_sentence"]]["e"]
         clip["w0"] = sentences[clip["start_sentence"]]["w0"]
         clip["w1"] = sentences[clip["end_sentence"]]["w1"]
+        t = clip.get("teaser_sentence", -1)
+        if t is not None and t >= 0:
+            clip["teaser_w0"], clip["teaser_w1"] = sentences[t]["w0"], sentences[t]["w1"]
         clip["engine"] = engine
     fitted.sort(key=lambda c: -c["score"])
     return fitted, engine

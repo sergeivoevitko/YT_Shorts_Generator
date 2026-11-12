@@ -272,12 +272,13 @@ def add_overlays(chains: list[str], cur: str, add_input, settings: dict, style_k
     if cues:
         size = int(min(width, height * 0.8) * 0.14) // 2 * 2
         pos = settings["caption_position"]
+        zone = captions.SAFE_ZONES.get(settings.get("platform", "universal"), captions.SAFE_ZONES["universal"])
         if pos == "center":
             ey = int(height * 0.40) - size
         elif pos == "top":
             ey = int(height * (0.36 if portrait else 0.30))
-        else:
-            ey = int(height * (0.665 if portrait else 0.76)) - size
+        else:  # just above the caption block, which sits on the bottom safe-zone line
+            ey = int(height * ((1 - zone["bottom"] - 0.085) if portrait else 0.76)) - size
         for a, b, png in cues:
             idx = add_input("-loop", "1", "-i", png)
             chains.append(f"[{idx}:v]scale={size}:{size}:flags=lanczos,format=rgba[em{idx}]")
@@ -336,9 +337,31 @@ def render_clip(src: str, info: dict, clip: dict, all_words: list[dict], setting
         saved = src_dur - sum(b - a for a, b in cand) / fps
         if len(cand) > 1 or saved > 0.3:
             segs = cand
-    out_dur = sum(b - a for a, b in segs) / fps
-    cut = len(segs) > 1 or segs[0][0] > 0 or abs(out_dur - src_dur) > 0.05
+    main_dur = sum(b - a for a, b in segs) / fps
+    cut = len(segs) > 1 or segs[0][0] > 0 or abs(main_dur - src_dur) > 0.05
+
+    # Cold open: play the clip's strongest line first as a teaser, then start from the top.
+    teaser = None      # (first frame, end frame) on the uncut clip timeline
+    teaser_words: list[dict] = []
+    tw0, tw1 = clip.get("teaser_w0"), clip.get("teaser_w1")
+    if (settings.get("cold_open") and clip.get("use_teaser", True) and tw0 is not None and tw1 is not None
+            and w0 < tw0 <= tw1 <= w1 and all_words[tw0]["s"] - start >= 3.0):
+        t_begin = all_words[tw0]["s"] - start
+        last = tw0
+        while last < tw1 and all_words[last + 1]["e"] - start - t_begin <= 3.6:
+            last += 1
+        t_end = all_words[last]["e"] - start
+        if 1.0 <= t_end - t_begin <= 4.2:
+            fa = max(0, int(round((t_begin - 0.08) * fps)))
+            fb = min(int(round(src_dur * fps)), int(round((t_end + 0.14) * fps)))
+            teaser = (fa, fb)
+            teaser_words = [{"w": w["w"], "s": max(0.0, w["s"] - fa / fps), "e": w["e"] - fa / fps}
+                            for w in words[tw0 - w0:last - w0 + 1] if not w["hidden"]]
+    lead = (teaser[1] - teaser[0]) / fps if teaser else 0.0
+    out_dur = main_dur + lead
     words = _remap([w for w in words if not w["cut"] and not w["hidden"]], segs, fps)
+    if teaser:
+        words = teaser_words + [{"w": w["w"], "s": w["s"] + lead, "e": w["e"] + lead} for w in words]
 
     hook_seconds = float(settings["hook_seconds"]) if settings["hook_style"] != "none" else 0.0
     hook_text = clip.get("hook", "") if hook_seconds else ""
@@ -347,7 +370,9 @@ def render_clip(src: str, info: dict, clip: dict, all_words: list[dict], setting
     ass = captions.build_ass(
         words, out_dur, width, height, style_key, clip.get("emphasis_words", []),
         hook_text, settings["hook_style"], hook_seconds,
-        settings["caption_position"], float(settings["caption_scale"]), brand)
+        settings["caption_position"], float(settings["caption_scale"]), brand,
+        (settings.get("header_text") or clip.get("header") or "") if settings.get("header") else "",
+        settings.get("platform", "universal"))
     ass_name = f"{name}.ass"
     (job_dir / ass_name).write_text(ass, encoding="utf-8")
 
@@ -381,14 +406,23 @@ def render_clip(src: str, info: dict, clip: dict, all_words: list[dict], setting
             v.append(f"crop={plan['cw']}:{plan['ch']}:x='{plan['x_expr']}':y={plan['y']}")
     # Half-frame offsets keep the comparisons away from exact frame timestamps.
     sel = "+".join(f"gte(t,{(a - 0.5) / fps:.5f})*lt(t,{(b - 0.5) / fps:.5f})" for a, b in segs)
-    if cut:
-        v += [f"select='{sel}'", f"setpts=N/({fps_s})/TB"]
+    main = [f"select='{sel}'", f"setpts=N/({fps_s})/TB"] if cut else ["null"]
+    if teaser:
+        t_sel = f"trim=start={(teaser[0] - 0.5) / fps:.5f}:end={(teaser[1] - 0.5) / fps:.5f},setpts=PTS-STARTPTS"
+        chains.append(head + ",".join(v + ["split=2"]) + "[cmain][ctease]")
+        chains.append(f"[ctease]{t_sel}[tv]")
+        chains.append("[cmain]" + ",".join(main) + "[mv]")
+        head, v = "[tv][mv]", [f"concat=n=2:v=1:a=0", f"setpts=N/({fps_s})/TB"]
+    elif cut:
+        v += main
     v += [f"scale={width}:{height}:flags=lanczos", "setsar=1"]
-    cut_times, acc = [], 0.0
+    cut_times, acc = ([lead - 0.5 / fps] if teaser else []), lead
     for a_, b_ in segs[:-1]:
         acc += (b_ - a_) / fps
         cut_times.append(acc - 0.5 / fps)  # half a frame early so the switch lands on the first frame after the cut
     windows = _zoom_windows(words, out_dur, hook_seconds, cut_times) if settings["zooms"] else []
+    if teaser and settings["zooms"]:  # the teaser is always punched in, the start of the clip proper is not
+        windows = [(0.0, lead)] + [(max(a_, lead + 1.5), b_) for a_, b_ in windows if b_ > lead + 2.5]
     if windows:
         cond = "+".join(f"between(in_time,{a:.3f},{b - 0.001:.3f})" for a, b in windows)
         z = float(settings["zoom_amount"])
@@ -405,8 +439,15 @@ def render_clip(src: str, info: dict, clip: dict, all_words: list[dict], setting
     has_audio = info.get("has_audio", True)
     if has_audio:
         a = ["[0:a]aresample=48000"]
-        if cut:
-            a += [f"aselect='{sel}'", "asetpts=N/SR/TB"]
+        a_main = [f"aselect='{sel}'", "asetpts=N/SR/TB"] if cut else ["anull"]
+        if teaser:
+            chains.append(",".join(a + ["asplit=2"]) + "[amain][atease]")
+            chains.append(f"[atease]atrim=start={(teaser[0] - 0.5) / fps:.5f}:end={(teaser[1] - 0.5) / fps:.5f},"
+                          f"asetpts=PTS-STARTPTS,afade=t=out:st={max(0.0, lead - 0.06):.3f}:d=0.06[ta]")
+            chains.append("[amain]" + ",".join(a_main) + "[ma]")
+            a = ["[ta][ma]concat=n=2:v=0:a=1"]
+        elif cut:
+            a += a_main
         if settings["normalize_audio"]:
             a += ["loudnorm=I=-14:TP=-1.5:LRA=11", "aresample=48000"]
     else:
@@ -419,7 +460,9 @@ def render_clip(src: str, info: dict, clip: dict, all_words: list[dict], setting
     if settings["sfx"]:
         whoosh, pop = _make_sfx(job_dir)
         if (job_dir / whoosh).exists() and (job_dir / pop).exists():
-            events += [(max(0.0, a_ - 0.12), whoosh) for a_, _ in windows]
+            events += [(max(0.0, a_ - 0.12), whoosh) for a_, _ in windows if a_ > 0.2]
+            if teaser:
+                events.append((max(0.0, lead - 0.15), whoosh))
             events += [(a_, pop) for a_, _, _ in cues]
             if hook_text:
                 events.append((0.05, pop))
@@ -470,14 +513,15 @@ def render_clip(src: str, info: dict, clip: dict, all_words: list[dict], setting
                    cwd=str(job_dir), capture_output=True)
     (job_dir / ass_name).unlink(missing_ok=True)
     log(f"Clip {index} rendered: {out_dur:.1f}s, style {style_key or 'no captions'}, {len(segs) - 1} cuts "
-        f"({fillers} filler words), {plan['pieces']} camera positions, {len(cues)} emojis, {len(events)} sound effects.")
+        f"({fillers} filler words), {plan['pieces']} camera positions, {len(cues)} emojis, {len(events)} sound effects"
+        + (f", cold open {lead:.1f}s" if teaser else "") + (f", version {clip['variant']}" if clip.get("variant") else "") + ".")
     return {
         "index": index, "file": out_name, "thumb": thumb, "duration": round(out_dur, 2),
         "source_start": round(start, 2), "source_end": round(end, 2), "style": style_key,
         "width": width, "height": height, "fps": round(fps, 2), "w0": w0, "w1": w1, "version": version,
         "title": clip["title"], "hook": clip.get("hook", ""), "description": clip.get("description", ""),
         "hashtags": clip.get("hashtags", []), "score": clip.get("score", 0), "reason": clip.get("reason", ""),
-        "scores": clip.get("scores") or {},
+        "scores": clip.get("scores") or {}, "variant": clip.get("variant", ""), "cold_open": bool(teaser),
         "engine": clip.get("engine", "offline"),
         "transcript": " ".join(w["w"] for w in all_words[w0:w1 + 1]),
     }

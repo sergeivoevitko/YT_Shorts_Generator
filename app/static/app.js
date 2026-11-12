@@ -167,7 +167,9 @@ async function init() {
   bind("silence_gap", "silence_gap", "num", "gapVal", (v) => Number(v).toFixed(2) + " s");
   bind("zoom_amount", "zoom_amount", "num", "zoomVal", (v) => "+" + Math.round((v - 1) * 100) + "%");
   bind("music_volume", "music_volume", "num", "musicVal", (v) => Math.round(v * 100) + "%");
-  for (const id of ["remove_silence", "zooms", "progress_bar", "normalize_audio", "use_ai", "remove_fillers", "emojis", "sfx", "logo_enabled", "review_picks"]) bind(id, id, "check");
+  for (const id of ["remove_silence", "zooms", "progress_bar", "normalize_audio", "use_ai", "remove_fillers", "emojis", "sfx", "logo_enabled", "review_picks", "cold_open", "header", "ab_versions"]) bind(id, id, "check");
+  $("platform").replaceChildren(...Object.entries(cfg.platforms).map(([k, v]) => el("option", { value: k, textContent: v })));
+  for (const id of ["platform", "header_text"]) bind(id, id);
   bind("sfx_volume", "sfx_volume", "num", "sfxVal", (v) => Math.round(v * 100) + "%");
   bind("logo_scale", "logo_scale", "num", "logoScaleVal", (v) => Math.round(v * 100) + "% of width");
   bind("logo_opacity", "logo_opacity", "num", "logoOpVal", (v) => Math.round(v * 100) + "%");
@@ -185,7 +187,12 @@ async function init() {
   $("reviewCancel").onclick = () => currentJob && api(`/api/jobs/${currentJob}/cancel`, { method: "POST" }).then(() => watch(currentJob));
   $("reviewGo").onclick = async () => {
     const picks = [...document.querySelectorAll("#reviewList .cand")].filter((row) => row.querySelector("input[type=checkbox]").checked)
-      .map((row) => ({ index: Number(row.dataset.index), hook: row.querySelector(".hookSel").value, title: row.querySelector(".titleSel").value }));
+      .map((row) => {
+        const pick = { index: Number(row.dataset.index), hook: row.querySelector(".hookSel").value, title: row.querySelector(".titleSel").value };
+        const cold = row.querySelector(".coldSel");
+        if (cold) pick.cold_open = cold.checked;
+        return pick;
+      });
     if (!picks.length) { alert("Tick at least one moment."); return; }
     try {
       await api(`/api/jobs/${currentJob}/render`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ picks }) });
@@ -570,6 +577,8 @@ function drawReview(job) {
         el("div", {}, [el("label", { textContent: "Title" }), titleSel]),
         el("div", {}, [el("label", { textContent: "Hook text on screen" }), hookSel]),
       ]),
+      ...(c.teaser ? [el("label", { className: "check", style: "margin:0;font-size:13px" }, [
+        el("input", { type: "checkbox", className: "coldSel", checked: true }), `Cold open with: \u201c${c.teaser}\u201d`])] : []),
       el("div", { className: "quote", textContent: "\u201c" + c.text + (c.text.length >= 420 ? "..." : "") + "\u201d" }),
       el("div", { className: "why", textContent: c.reason }),
     ]));
@@ -604,6 +613,8 @@ function clipCard(jobId, c) {
         el("span", { textContent: `${Math.round(c.duration)}s` }),
         el("span", { textContent: `${c.width}x${c.height}` }),
         el("span", { textContent: styleName }),
+        ...(c.variant ? [el("span", { className: "score mid", textContent: "Version " + c.variant })] : []),
+        ...(c.cold_open ? [el("span", { textContent: "cold open" })] : []),
         ...(isStory ? [] : [el("span", { textContent: `from ${mins(c.source_start)}` })]),
       ]),
       subs,

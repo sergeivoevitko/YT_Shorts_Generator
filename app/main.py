@@ -47,6 +47,7 @@ def get_config():
         "whisper_models": transcribe.MODELS,
         "claude_models": config.CLAUDE_MODELS,
         "fonts": captions.FONTS,
+        "platforms": captions.PLATFORMS,
         "voices": voice.VOICES,
         "story_themes": story.THEMES,
         "story_tones": story.TONES,

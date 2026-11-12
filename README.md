@@ -96,6 +96,10 @@ your transcripts are sent to that provider; with Ollama or LM Studio nothing lea
 | Cut out pauses | Removes silences longer than the threshold, which tightens the pacing |
 | Punch-in zooms | Alternates a slight zoom on new sentences to keep the picture moving |
 | Hook | Short text at the top for the first seconds, written to stop the scroll |
+| Cold open | Plays the clip's strongest line for 2 to 3 seconds first, then starts from the top. Can be switched off per clip in the review list |
+| Topic label | A small label at the top for the whole clip, so someone who lands mid-clip knows what it is about |
+| A/B versions | Renders each chosen moment twice, with a different hook, caption style and opening, so you can post both and compare |
+| Keep text clear of buttons | Moves captions, hook and label out of the areas TikTok, Reels or Shorts cover with their own buttons |
 | Cut filler words | Removes "um", "uh", "er" from both the audio and the captions |
 | Emojis on key words | Pops an emoji above the captions when a matching word is spoken |
 | Sound effects | Whoosh on zooms, pop on the hook and emojis |

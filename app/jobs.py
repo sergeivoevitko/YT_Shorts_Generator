@@ -32,6 +32,7 @@ DEFAULTS = {
     "footage_order": "upload", "ambient_pad": True,
     "whisper_model": "small.en", "speech_engine": "local", "use_ai": True, "instructions": "",
     "review_picks": True,
+    "cold_open": True, "header": True, "header_text": "", "ab_versions": False, "platform": "universal",
 }
 
 STAGES = [("download", 0.10), ("transcribe", 0.30), ("analyze", 0.08), ("render", 0.52)]
@@ -51,6 +52,8 @@ def clean_settings(raw: dict) -> dict:
     s["aspect"] = s["aspect"] if s["aspect"] in render.ASPECTS else "9:16"
     s["resolution"] = s["resolution"] if s["resolution"] in render.RESOLUTIONS else "1080p"
     s["quality"] = s["quality"] if s["quality"] in render.QUALITY else "balanced"
+    s["platform"] = s["platform"] if s["platform"] in captions.SAFE_ZONES else "universal"
+    s["header_text"] = str(s["header_text"])[:44]
     s["speech_engine"] = "groq" if s["speech_engine"] == "groq" else "local"
     s["encoder"] = "cpu" if s["encoder"] == "cpu" else "auto"
     s["fps"] = str(s["fps"]) if str(s["fps"]) in ("30", "60") else "source"
@@ -87,7 +90,7 @@ def clean_settings(raw: dict) -> dict:
     s["brand_font"] = s["brand_font"] if s["brand_font"] in captions.FONTS else ""
     s["handle_text"] = str(s["handle_text"])[:40]
     for key in ("remove_silence", "zooms", "progress_bar", "normalize_audio", "use_ai", "remove_fillers", "sfx",
-                "emojis", "logo_enabled", "review_picks"):
+                "emojis", "logo_enabled", "review_picks", "cold_open", "header", "ab_versions"):
         s[key] = bool(s[key])
     s["instructions"] = str(s["instructions"])[:2000]
     return s
@@ -468,10 +471,13 @@ class JobManager:
             for key in ("hook", "title"):
                 if str(pick.get(key) or "").strip():
                     plan[key] = str(pick[key]).strip()[:200]
+            if "cold_open" in pick:
+                plan["use_teaser"] = bool(pick["cold_open"])
             plans.append(plan)
         if not plans:
             raise RuntimeError("No moments were selected.")
         log(f"You chose {len(plans)} of {len(candidates)} proposed moments.")
+        plans = _with_variants(plans, job.settings)
         (job.dir / "plan.json").write_text(json.dumps(plans, indent=2), encoding="utf-8")
         job.candidates = []
         self._render_plans(job, meta, meta, words, plans, log, stage)
@@ -491,12 +497,14 @@ class JobManager:
                 shutil.copy(logo, job.dir / "logo.png")
                 s["logo_path"] = str(job.dir / "logo.png")
         for i, plan in enumerate(plans, start=1):
+            order = captions.MIX_ORDER
+            shift = int(plan.get("style_shift", 0))
             if s["caption_style"] == "none":
                 style = None
             elif s["caption_style"] == "mix":
-                style = captions.MIX_ORDER[(i - 1) % len(captions.MIX_ORDER)]
-            else:
-                style = s["caption_style"]
+                style = order[(int(plan.get("ordinal", i)) - 1 + shift) % len(order)]
+            else:  # version B of a fixed style uses the next style, so the two versions differ
+                style = order[(order.index(s["caption_style"]) + shift) % len(order)] if shift else s["caption_style"]
             n = len(plans)
             result = render.render_clip(
                 meta["path"], info, plan, words, s, job.dir, i, style, music,
@@ -574,14 +582,33 @@ class JobManager:
                 "score": p.get("score", 0), "scores": p.get("scores") or {}, "reason": p.get("reason", ""),
                 "start": round(p["start"], 1), "end": round(p["end"], 1), "duration": round(p["end"] - p["start"], 1),
                 "text": " ".join(w["w"] for w in words[p["w0"]:p["w1"] + 1])[:420],
+                "teaser": " ".join(w["w"] for w in words[p["teaser_w0"]:p["teaser_w1"] + 1])[:120]
+                if s["cold_open"] and p.get("teaser_w0") is not None else "",
                 "selected": i <= want,
             } for i, p in enumerate(plans, start=1)]
             job.progress = 0.48
             return "review"
 
+        plans = _with_variants(plans, s)
         (job.dir / "plan.json").write_text(json.dumps(plans, indent=2), encoding="utf-8")
         self._render_plans(job, meta, info, words, plans, log, stage)
         return None
+
+
+def _with_variants(plans: list[dict], settings: dict) -> list[dict]:
+    """Number the plans and, for A/B testing, add a second version of each with a
+    different hook and caption style."""
+    out = []
+    for ordinal, plan in enumerate(plans, start=1):
+        base = dict(plan, ordinal=ordinal)
+        if not settings.get("ab_versions"):
+            out.append(base)
+            continue
+        hooks = [h["text"] for h in plan.get("hooks") or [] if h.get("text") and h["text"] != plan.get("hook")]
+        out.append(dict(base, variant="A"))
+        out.append(dict(base, variant="B", style_shift=2, hook=hooks[0] if hooks else plan.get("hook", ""),
+                        use_teaser=not plan.get("use_teaser", True) if plan.get("teaser_w0") is not None else False))
+    return out
 
 
 def _write_post_text(job: Job) -> None:

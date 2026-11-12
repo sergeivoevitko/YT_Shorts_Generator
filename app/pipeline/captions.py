@@ -43,6 +43,16 @@ STYLES: dict[str, dict] = {
         "outline_color": "#FF00C8", "outline": 0.035, "shadow": 0.0, "anim": "pop", "blur": 0.03,
     },
 }
+# How much of the screen each app covers with its own buttons and text, as fractions of the
+# frame (portrait video). Text is kept out of these areas. "universal" is safe everywhere.
+SAFE_ZONES = {
+    "tiktok": {"top": 0.08, "bottom": 0.24, "right": 0.14},
+    "reels": {"top": 0.13, "bottom": 0.22, "right": 0.12},
+    "shorts": {"top": 0.09, "bottom": 0.20, "right": 0.16},
+}
+SAFE_ZONES["universal"] = {k: max(z[k] for z in SAFE_ZONES.values()) for k in ("top", "bottom", "right")}
+PLATFORMS = {"universal": "All platforms (safest)", "tiktok": "TikTok", "reels": "Instagram Reels", "shorts": "YouTube Shorts"}
+
 FONTS = ["Poppins ExtraBold", "Poppins SemiBold", "Anton", "Bangers", "Bebas Neue"]
 MIX_ORDER = ["bold_pop", "beast", "karaoke", "neon", "one_word", "minimal"]
 
@@ -99,9 +109,12 @@ def group_words(words: list[dict], max_words: int, max_chars: int, gap: float = 
 
 def build_ass(words: list[dict], duration: float, width: int, height: int, style_key: str | None,
               emphasis: list[str], hook_text: str, hook_style: str | None, hook_seconds: float,
-              position: str = "lower", scale: float = 1.0, brand: dict | None = None) -> str:
+              position: str = "lower", scale: float = 1.0, brand: dict | None = None,
+              header: str = "", platform: str = "universal") -> str:
     """words: [{"w", "s", "e"}] with times relative to the start of the rendered clip."""
     portrait = height >= width
+    zone = SAFE_ZONES.get(platform, SAFE_ZONES["universal"]) if portrait else {"top": 0.03, "bottom": 0.09, "right": 0.07}
+    header = (header or "").replace("\\", "").replace("{", "").replace("}", "").strip()[:44]
     ref = min(width, height * 0.8)
     lines = [
         "[Script Info]", "ScriptType: v4.00+", f"PlayResX: {width}", f"PlayResY: {height}",
@@ -113,6 +126,7 @@ def build_ass(words: list[dict], duration: float, width: int, height: int, style
     ]
     events: list[str] = []
     margin_lr = int(width * 0.07)
+    margin_r = int(width * max(0.07, zone["right"]))
 
     brand = brand or {}
     st = STYLES.get(style_key or "")
@@ -129,16 +143,16 @@ def build_ass(words: list[dict], duration: float, width: int, height: int, style
         if position == "center":
             align, margin_v = 5, 0
         elif position == "top":
-            align, margin_v = 8, int(height * (0.2 if portrait else 0.08))
+            align, margin_v = 8, int(height * (max(0.2, zone["top"] + 0.1) if portrait else 0.08))
         else:
-            align, margin_v = 2, int(height * (0.25 if portrait else 0.09))
+            align, margin_v = 2, int(height * zone["bottom"])
         karaoke = st["anim"] == "karaoke"
         primary = _ass_color(st["active"] if karaoke else st["primary"])
         secondary = _ass_color(st["primary"])
         lines.append(
             f"Style: Cap,{st['font']},{size:.0f},{primary},{secondary},{_ass_color(st['outline_color'])},"
             f"{_ass_color('#000000', 0x60)},0,0,0,0,100,100,0,0,1,{size * st['outline']:.1f},"
-            f"{size * st['shadow']:.1f},{align},{margin_lr},{margin_lr},{margin_v},1")
+            f"{size * st['shadow']:.1f},{align},{margin_lr},{margin_r},{margin_v},1")
 
         emph = {_norm(e) for e in emphasis if _norm(e)}
         blur = f"\\blur{size * st['blur']:.1f}" if st.get("blur") else ""
@@ -191,20 +205,28 @@ def build_ass(words: list[dict], duration: float, width: int, height: int, style
         text = hook_text.replace("\\", "").replace("{", "").replace("}", "")
         text = text.upper() if hk["upper"] else text
         wrapped = "\\N".join(textwrap.wrap(text, 18 if portrait else 32)) or text
-        margin_v = int(height * (0.11 if portrait else 0.06))
+        margin_v = int(height * (zone["top"] + (0.055 if header else 0.0) + (0.0 if portrait else 0.02)))
         if hk["boxed"]:
             lines.append(
                 f"Style: Hook,Poppins ExtraBold,{size:.0f},{_ass_color(hk['text'])},{_ass_color(hk['text'])},"
                 f"{_ass_color(hk['box'])},{_ass_color(hk['box'])},0,0,0,0,100,100,0,0,3,{size * 0.22:.1f},0,8,"
-                f"{margin_lr},{margin_lr},{margin_v},1")
+                f"{margin_lr},{margin_r},{margin_v},1")
         else:
             lines.append(
                 f"Style: Hook,Poppins ExtraBold,{size * 1.15:.0f},{_ass_color(hk['text'])},{_ass_color(hk['text'])},"
                 f"{_ass_color(hk['box'])},{_ass_color('#000000', 0x60)},0,0,0,0,100,100,0,0,1,{size * 0.1:.1f},"
-                f"{size * 0.04:.1f},8,{margin_lr},{margin_lr},{margin_v},1")
+                f"{size * 0.04:.1f},8,{margin_lr},{margin_r},{margin_v},1")
         end = min(hook_seconds, duration)
         anim = "{\\fad(120,220)\\fscx88\\fscy88\\t(0,140,\\fscx100\\fscy100)}"
         events.append(f"Dialogue: 2,{_ts(0)},{_ts(end)},Hook,,0,0,0,,{anim}{wrapped}")
+
+    if header:
+        size = ref * 0.042
+        lines.append(
+            f"Style: Header,Poppins SemiBold,{size:.0f},{_ass_color('#FFFFFF')},{_ass_color('#FFFFFF')},"
+            f"{_ass_color('#000000', 0x58)},{_ass_color('#000000', 0x58)},0,0,0,0,100,100,0,0,3,{size * 0.3:.1f},0,8,"
+            f"{margin_lr},{margin_r},{int(height * zone['top'])},1")
+        events.append(f"Dialogue: 0,{_ts(0)},{_ts(duration)},Header,,0,0,0,,{header}")
 
     handle = str(brand.get("handle") or "").replace("\\", "").replace("{", "").replace("}", "").strip()[:40]
     if handle:
@@ -212,7 +234,7 @@ def build_ass(words: list[dict], duration: float, width: int, height: int, style
         lines.append(
             f"Style: Handle,Poppins SemiBold,{size:.0f},{_ass_color('#FFFFFF', 0x40)},{_ass_color('#FFFFFF', 0x40)},"
             f"{_ass_color('#000000', 0x70)},{_ass_color('#000000', 0x90)},0,0,0,0,100,100,0,0,1,{size * 0.06:.1f},0,2,"
-            f"{margin_lr},{margin_lr},{int(height * 0.035)},1")
+            f"{margin_lr},{margin_r},{int(height * 0.035)},1")
         events.append(f"Dialogue: 0,{_ts(0)},{_ts(duration)},Handle,,0,0,0,,{handle}")
 
     lines += ["", "[Events]",
