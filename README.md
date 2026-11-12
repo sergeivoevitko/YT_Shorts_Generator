@@ -160,8 +160,13 @@ Cropping, captions and other effects still run on the processor, so the speed-up
 - **A run says "picked by offline scoring" although an AI is set up**: a yellow box above the clips gives the
   reason. Open AI settings and press **Save and test**. With Gemini, `gemini-3.5-flash` is a model that works
   on the free tier; the newest models often have no free quota or do not answer.
-- **Download fails**: run `update.bat` and try again. If YouTube asks for a sign-in, download the video
-  yourself and use the upload option.
+- **Download fails**: run `update.bat` and try again.
+- **"Sign in to confirm you're not a bot"**: this is YouTube's bot check, triggered by many downloads from one
+  internet connection. It usually clears within a few hours. The app first retries through other routes by
+  itself. To carry on straight away, press **YouTube access** under the link field and let the app use a YouTube
+  sign-in: a cookie file exported from your browser is the most reliable, Firefox's sign-in also works, and
+  Chrome and Edge often refuse on Windows. YouTube can restrict an account used for automated downloads, so a
+  spare Google account is safer than your main one. You can also download the video yourself and upload it.
 - **"YouTube: install Deno" in the header**: run `install.bat` again, then reopen `start.bat`.
 - **"No caption support in FFmpeg"**: install the full build with `winget install Gyan.FFmpeg`, then restart.
 - **Slow transcription**: pick a smaller speech model under Analysis. With an NVIDIA card, run `install.bat`

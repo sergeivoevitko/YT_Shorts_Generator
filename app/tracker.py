@@ -41,6 +41,7 @@ def fetch_stats(url: str) -> dict:
     runtimes = config.js_runtimes()
     if runtimes:
         opts["js_runtimes"] = runtimes
+    opts.update(config.youtube_auth_options())
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=False)
     if info.get("view_count") is None:

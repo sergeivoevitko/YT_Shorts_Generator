@@ -156,3 +156,5 @@ body:not([data-mode=comp]) .only-comp { display: none !important; }
 .cand .move { display: flex; gap: 4px; }
 .cand .move button { padding: 2px 9px; font-size: 13px; }
 .cand .src { color: var(--accent); }
+
+body[data-mode=story] .no-story { display: none !important; }

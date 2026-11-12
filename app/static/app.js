@@ -215,6 +215,7 @@ async function init() {
     if (!r.ok) alert("Your clips are in:\n" + r.path);
   };
   aiSettings();
+  youtubeAccess();
   const loadLog = async () => {
     const r = await api("/api/log?lines=400");
     $("logText").textContent = r.text || "The log is empty.";
@@ -391,6 +392,51 @@ function aiSettings() {
         : `${r.models.length} models found. Click the model field and start typing to pick one.`;
     } catch (err) { $("testResult").textContent = err.message; }
   };
+}
+
+function youtubeAccess() {
+  let state = { mode: "none", has_file: false, browsers: {} };
+  const label = () => {
+    $("ytState").textContent = state.mode === "none" ? "(not signed in; only needed if YouTube blocks downloads)"
+      : state.mode === "file" ? "(using your cookie file)" : `(using the YouTube sign-in from ${state.browsers[state.mode] || state.mode})`;
+  };
+  const hint = () => {
+    const m = $("ytMode").value;
+    $("ytFileRow").hidden = m !== "file";
+    $("ytFileClear").hidden = !state.has_file;
+    $("ytHint").textContent = m === "none" ? "No sign-in. This is the normal setting."
+      : m === "file" ? "Most reliable. In your browser, sign in to youtube.com, export the cookies with a 'cookies.txt' extension (Netscape format), and choose that file here."
+      : m === "firefox" ? "The app reads the YouTube sign-in from Firefox. Sign in to youtube.com in Firefox first."
+      : "On Windows, Chrome, Edge and Brave lock their sign-in data, so this often fails. If it does, use Firefox or a cookie file.";
+  };
+  const load = async () => {
+    state = await api("/api/youtube-access");
+    $("ytMode").replaceChildren(el("option", { value: "none", textContent: "Anonymous (default)" }),
+      ...Object.entries(state.browsers).map(([k, v]) => el("option", { value: k, textContent: `My sign-in in ${v}` })),
+      el("option", { value: "file", textContent: "A cookie file (cookies.txt)" }));
+    $("ytMode").value = state.mode;
+    label(); hint();
+  };
+  $("ytMode").onchange = hint;
+  $("btnYt").onclick = async () => { $("ytMsg").textContent = ""; await load(); $("ytDlg").showModal(); };
+  $("ytClose").onclick = () => $("ytDlg").close();
+  $("ytFile").onchange = () => { const f = $("ytFile").files[0]; $("ytFileName").textContent = f ? f.name : "choose a cookies.txt file"; };
+  $("ytFileClear").onclick = async () => { state = await api("/api/youtube-access/cookies", { method: "DELETE" }); await load(); };
+  $("ytSave").onclick = async () => {
+    try {
+      const m = $("ytMode").value;
+      if (m === "file" && $("ytFile").files[0]) {
+        const form = new FormData();
+        form.append("cookies", $("ytFile").files[0]);
+        state = await api("/api/youtube-access/cookies", { method: "POST", body: form });
+      } else {
+        state = await api("/api/youtube-access", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode: m }) });
+      }
+      label();
+      $("ytDlg").close();
+    } catch (err) { $("ytMsg").textContent = err.message; $("ytMsg").style.color = "var(--bad)"; }
+  };
+  load().catch(() => {});
 }
 
 function brandControls() {

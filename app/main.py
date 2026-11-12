@@ -152,6 +152,44 @@ def ai_autopick():
     return result
 
 
+@app.get("/api/youtube-access")
+def yt_access_get():
+    return dict(config.youtube_access(), browsers=config.YT_BROWSERS)
+
+
+@app.post("/api/youtube-access")
+def yt_access_set(payload: dict):
+    mode = str(payload.get("mode", "none"))
+    if mode not in config.YT_BROWSERS and mode not in ("none", "file"):
+        raise HTTPException(400, "Unknown choice.")
+    if mode == "file" and not config.YT_COOKIES_FILE.exists():
+        raise HTTPException(400, "Upload a cookie file first.")
+    config.save_settings({"yt_access": mode})
+    config.applog(f"[download] YouTube access set to: {mode}")
+    return dict(config.youtube_access(), browsers=config.YT_BROWSERS)
+
+
+@app.post("/api/youtube-access/cookies")
+def yt_access_cookies(cookies: UploadFile = File(...)):
+    data = cookies.file.read(2_000_000)
+    text = data.decode("utf-8", errors="replace")
+    if "youtube.com" not in text or "\t" not in text:
+        raise HTTPException(400, "This does not look like a cookie file for YouTube. Export it in 'Netscape' "
+                                 "format while signed in to youtube.com.")
+    config.ensure_dirs()
+    config.YT_COOKIES_FILE.write_text(text, encoding="utf-8")
+    config.save_settings({"yt_access": "file"})
+    config.applog("[download] YouTube cookie file saved")
+    return dict(config.youtube_access(), browsers=config.YT_BROWSERS)
+
+
+@app.delete("/api/youtube-access/cookies")
+def yt_access_cookies_delete():
+    config.YT_COOKIES_FILE.unlink(missing_ok=True)
+    config.save_settings({"yt_access": "none"})
+    return dict(config.youtube_access(), browsers=config.YT_BROWSERS)
+
+
 @app.get("/api/tracker")
 def tracker_list():
     entries = sorted(tracker._load(), key=lambda e: -(e.get("views") or -1))
@@ -465,6 +503,20 @@ def main() -> None:
                       f"({report['msvc_runtime']}). Speech recognition can crash because of it. Run install.bat again to update it.")
     config.applog(f"[server] started on http://{host}:{port}, ffmpeg={config.ffmpeg_path() or 'missing'}, "
                   f"ai={llm.current()['name']}/{llm.current()['model']}")
+    if sys.platform.startswith("win"):
+        try:  # a browser closing a connection early prints a long, harmless traceback on Windows
+            from asyncio import proactor_events
+
+            original = proactor_events._ProactorBasePipeTransport._call_connection_lost
+
+            def quiet(self, exc):
+                try:
+                    original(self, exc)
+                except ConnectionResetError:
+                    pass
+            proactor_events._ProactorBasePipeTransport._call_connection_lost = quiet
+        except Exception:
+            pass
     print(f"\n  ClipForge is running at http://{host}:{port}\n  Keep this window open. Press Ctrl+C to stop.\n")
     uvicorn.run(app, host=host, port=port, log_level="warning")
 

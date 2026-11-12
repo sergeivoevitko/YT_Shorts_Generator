@@ -71,6 +71,7 @@
         <label class="check"><input type="checkbox" id="comp_intro"> Start with a short teaser of the best moment and the title</label>
         <p class="hint">The app finds moments that fit the theme in every video and joins them into one video. Pick 16:9 under Output for a normal YouTube video, or 9:16 for a vertical one. Use videos you own or have permission to reuse: compilations of other people's videos are a common target for copyright claims.</p>
       </div>
+      <p class="hint no-story" style="margin-top:8px"><button type="button" class="link" id="btnYt">YouTube access</button> <span id="ytState"></span></p>
       <button class="primary" id="go">Generate shorts</button>
       <p class="hint" id="formError"></p>
     </div>
@@ -312,6 +313,24 @@
   <div class="row end">
     <button type="button" class="ghost" id="resRefresh">Update view counts</button>
     <button type="button" class="primary small" id="resClose">Close</button>
+  </div>
+</dialog>
+
+<dialog id="ytDlg">
+  <h2>YouTube access</h2>
+  <p class="hint">YouTube sometimes refuses downloads with "Sign in to confirm you're not a bot". This happens after many downloads from one internet connection and usually clears by itself within a few hours. To carry on straight away, let the app use a YouTube sign-in.</p>
+  <label>Download as</label>
+  <select id="ytMode"></select>
+  <p class="hint" id="ytHint"></p>
+  <div id="ytFileRow">
+    <label class="file"><input type="file" id="ytFile" accept=".txt"><span id="ytFileName">choose a cookies.txt file</span></label>
+    <button type="button" class="link" id="ytFileClear" hidden>remove the saved file</button>
+  </div>
+  <p class="hint">Caution: YouTube can restrict an account that is used for automated downloads. A spare Google account is safer than your main one. The sign-in stays on this computer.</p>
+  <p class="hint" id="ytMsg"></p>
+  <div class="row end">
+    <button type="button" class="ghost" id="ytClose">Close</button>
+    <button type="button" class="primary small" id="ytSave">Save</button>
   </div>
 </dialog>
 

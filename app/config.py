@@ -176,6 +176,30 @@ def msvc_runtime_old() -> bool:
     return (major, minor) < (14, 40)
 
 
+YT_COOKIES_FILE = WORKSPACE / "youtube_cookies.txt"
+YT_BROWSERS = {"firefox": "Firefox", "chrome": "Chrome", "edge": "Edge", "brave": "Brave", "opera": "Opera"}
+
+
+def youtube_access() -> dict:
+    """How the app identifies itself to YouTube: not at all, with a browser's sign-in, or with a cookie file."""
+    mode = load_settings().get("yt_access") or "none"
+    if mode == "file" and not YT_COOKIES_FILE.exists():
+        mode = "none"
+    if mode not in YT_BROWSERS and mode != "file":
+        mode = "none"
+    return {"mode": mode, "has_file": YT_COOKIES_FILE.exists()}
+
+
+def youtube_auth_options() -> dict:
+    """Extra yt-dlp options for the chosen YouTube access mode."""
+    mode = youtube_access()["mode"]
+    if mode == "file":
+        return {"cookiefile": str(YT_COOKIES_FILE)}
+    if mode in YT_BROWSERS:
+        return {"cookiesfrombrowser": (mode,)}
+    return {}
+
+
 def groq_key() -> str:
     return ((load_settings().get("providers") or {}).get("groq") or {}).get("api_key", "").strip()
 
