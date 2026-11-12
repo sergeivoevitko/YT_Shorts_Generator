@@ -522,6 +522,7 @@ def render_clip(src: str, info: dict, clip: dict, all_words: list[dict], setting
         "title": clip["title"], "hook": clip.get("hook", ""), "description": clip.get("description", ""),
         "hashtags": clip.get("hashtags", []), "score": clip.get("score", 0), "reason": clip.get("reason", ""),
         "scores": clip.get("scores") or {}, "variant": clip.get("variant", ""), "cold_open": bool(teaser),
+        "hook_type": next((h.get("type", "") for h in clip.get("hooks") or [] if h.get("text") == clip.get("hook")), ""),
         "engine": clip.get("engine", "offline"),
         "transcript": " ".join(w["w"] for w in all_words[w0:w1 + 1]),
     }

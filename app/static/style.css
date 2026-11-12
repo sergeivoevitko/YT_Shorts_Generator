@@ -139,3 +139,14 @@ body[data-mode=story] .only-clips, body[data-mode=clips] .only-story { display: 
 .cand .grid2 label { margin: 0 0 3px; font-size: 12px; }
 
 .style .demo { white-space: pre; }
+
+.rtable { width: 100%; border-collapse: collapse; font-size: 13px; margin: 10px 0; }
+.rtable th { text-align: left; color: var(--muted); font-weight: 500; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+.rtable td { padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+.rtable td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.rtable input { width: 90px; padding: 5px 8px; font-size: 13px; }
+.rtable a { color: var(--accent); }
+.insight { display: inline-block; vertical-align: top; margin: 0 18px 12px 0; }
+.insight b { display: block; font-size: 13px; margin-bottom: 4px; }
+.insight div { font-size: 13px; color: #c3cad8; }
+.insight div:first-of-type { color: var(--good); }

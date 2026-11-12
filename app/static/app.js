@@ -211,6 +211,36 @@ async function init() {
     $("logPath").textContent = "File: " + r.path;
     $("logText").scrollTop = $("logText").scrollHeight;
   };
+  const fmt = (n) => (n === null || n === undefined ? "" : Number(n).toLocaleString());
+  const drawResults = (r) => {
+    $("resInsights").replaceChildren(...r.insights.map((b) => el("div", { className: "insight" }, [
+      el("b", { textContent: b.dimension }),
+      ...b.rows.map((row) => el("div", { textContent: `${(cfg.caption_styles[row.label] || {}).name || row.label}: ${fmt(row.avg)} avg (${row.count} clip${row.count === 1 ? "" : "s"})` }))])));
+    if (!r.entries.length) { $("resTable").replaceChildren(); $("resNote").textContent = "No clips tracked yet."; return; }
+    const withViews = r.entries.filter((e) => e.views !== null).length;
+    $("resNote").textContent = withViews < 6 ? `${withViews} of the 6 view counts needed before patterns are passed to the AI. Averages from a few clips can mislead.` : "Averages over few clips can mislead; look for differences that hold as you add more.";
+    const head = el("tr", {}, ["Clip", "Platform", "Hook type", "Style", "Length", "Views", "Likes", "Set views", ""].map((t) => el("th", { textContent: t })));
+    const rows = r.entries.map((e) => {
+      const input = el("input", { type: "number", min: "0", placeholder: "by hand" });
+      input.onchange = async () => drawResults(await api(`/api/tracker/${e.id}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ views: Number(input.value) }) }));
+      const del = el("button", { className: "link", type: "button", textContent: "remove" });
+      del.onclick = async () => drawResults(await api(`/api/tracker/${e.id}`, { method: "DELETE" }));
+      return el("tr", {}, [
+        el("td", {}, [el("a", { href: e.url, target: "_blank", rel: "noopener", textContent: e.title || e.url }), ...(e.error ? [el("div", { className: "hint", textContent: e.error })] : [])]),
+        el("td", { textContent: e.platform }), el("td", { textContent: e.hook_type || "" }),
+        el("td", { textContent: (cfg.caption_styles[e.style] || {}).name || e.style }),
+        el("td", { className: "num", textContent: Math.round(e.duration) + "s" }),
+        el("td", { className: "num", textContent: fmt(e.views) }), el("td", { className: "num", textContent: fmt(e.likes) }),
+        el("td", {}, input), el("td", {}, del)]);
+    });
+    $("resTable").replaceChildren(el("table", { className: "rtable" }, [head, ...rows]));
+  };
+  $("btnResults").onclick = async () => { $("resultsDlg").showModal(); drawResults(await api("/api/tracker")); };
+  $("resClose").onclick = () => $("resultsDlg").close();
+  $("resRefresh").onclick = async () => {
+    $("resNote").textContent = "Reading view counts, this can take a while...";
+    try { drawResults(await api("/api/tracker/refresh", { method: "POST" })); } catch (err) { $("resNote").textContent = err.message; }
+  };
   $("btnLog").onclick = async () => { $("logDlg").showModal(); await loadLog(); };
   $("logRefresh").onclick = loadLog;
   $("logClose").onclick = () => $("logDlg").close();
@@ -599,6 +629,15 @@ function clipCard(jobId, c) {
   };
   const cls = c.score >= 75 ? "" : c.score >= 55 ? " mid" : " low";
   const styleName = c.style ? (cfg.caption_styles[c.style] || {}).name : "No captions";
+  const track = el("button", { type: "button", textContent: "Track", title: "Paste the link of the posted video to follow its views" });
+  track.onclick = async () => {
+    const url = prompt("Paste the link of this clip after you posted it (YouTube, TikTok or Instagram):");
+    if (!url) return;
+    try {
+      const e = await api("/api/tracker", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ job_id: jobId, index: c.index, url: url.trim() }) });
+      track.textContent = e.views !== null ? `${Number(e.views).toLocaleString()} views` : "Tracked";
+    } catch (err) { alert(err.message); }
+  };
   const edit = el("button", { type: "button", textContent: "Edit" });
   edit.onclick = () => openEditor(jobId, c.index);
   const subs = el("div", { className: "subs" }, Object.entries(c.scores || {}).filter(([, v]) => v > 0).map(([k, v]) =>
@@ -622,7 +661,7 @@ function clipCard(jobId, c) {
       el("div", { className: "text", textContent: `${c.description} ${tags}` }),
       el("div", { className: "why", textContent: isStory ? c.transcript : c.reason }),
       el("div", { className: "actions" }, [
-        el("a", { className: "dl", href: base + c.file + "?download=1", textContent: "Download" }), ...(isStory ? [] : [edit]), copy]),
+        el("a", { className: "dl", href: base + c.file + "?download=1", textContent: "Download" }), ...(isStory ? [] : [edit]), copy, track]),
     ]),
   ]);
 }

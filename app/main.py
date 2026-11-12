@@ -13,7 +13,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import config
+from . import config, tracker
 from .jobs import DEFAULTS, JobManager, new_id
 from .pipeline import captions, llm, render, story, transcribe, voice
 
@@ -144,6 +144,47 @@ def ai_autopick():
         return {"ok": False, "model": "", "tried": [], "error": str(exc)[:300]}
     result["status"] = config.system_status()
     return result
+
+
+@app.get("/api/tracker")
+def tracker_list():
+    entries = sorted(tracker._load(), key=lambda e: -(e.get("views") or -1))
+    return {"entries": entries, "insights": tracker.insights(entries)}
+
+
+@app.post("/api/tracker")
+def tracker_add(payload: dict):
+    job = manager.get(str(payload.get("job_id", "")))
+    url = str(payload.get("url", "")).strip()
+    index = int(payload.get("index", 0) or 0)
+    if not job or not 1 <= index <= len(job.clips):
+        raise HTTPException(404, "Clip not found")
+    if not re.match(r"^https?://", url):
+        raise HTTPException(400, "Paste the full link of the posted video, starting with https://")
+    return tracker.add(job.id, job.clips[index - 1], url)
+
+
+@app.post("/api/tracker/refresh")
+def tracker_refresh():
+    tracker.refresh(None)
+    return tracker_list()
+
+
+@app.post("/api/tracker/{entry_id}")
+def tracker_set(entry_id: str, payload: dict):
+    try:
+        views = int(payload.get("views"))
+    except (TypeError, ValueError):
+        raise HTTPException(400, "Views must be a number.")
+    if not tracker.set_views(entry_id, views):
+        raise HTTPException(404, "Entry not found")
+    return tracker_list()
+
+
+@app.delete("/api/tracker/{entry_id}")
+def tracker_delete(entry_id: str):
+    tracker.remove(entry_id)
+    return tracker_list()
 
 
 @app.get("/api/log")

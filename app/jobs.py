@@ -11,7 +11,7 @@ import traceback
 import uuid
 from pathlib import Path
 
-from . import config
+from . import config, tracker
 from .pipeline import analyze, captions, download, footage, llm, reframe, render, story, transcribe, voice
 
 DEFAULTS = {
@@ -569,8 +569,11 @@ class JobManager:
         up(0.1, "Finding the best moments" + (f" with {ai['name']}" if s["use_ai"] and ai["ready"] else ""))
         want = s["num_clips"]
         limit = min(max(want * 2, want + 3), 14) if s["review_picks"] else want
+        learned = tracker.summary_for_ai()
+        if learned:
+            log("Passing your tracked results to the AI.")
         plans, engine = analyze.analyze(sentences, meta["title"], want, s["min_len"], s["max_len"],
-                                        s["use_ai"], s["instructions"], log, limit)
+                                        s["use_ai"], (s["instructions"] + "\n" + learned).strip(), log, limit)
         job.engine = engine
         log(f"Found {len(plans)} moments using {'offline scoring' if engine == 'offline' else engine}.")
 

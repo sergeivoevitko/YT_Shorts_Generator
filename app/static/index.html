@@ -10,6 +10,7 @@
 <header>
   <div class="brand"><span class="logo">▶</span> ClipForge <small>shorts from YouTube videos or your own footage</small></div>
   <div class="pills" id="pills"></div>
+  <button class="ghost" id="btnResults">Results</button>
   <button class="ghost" id="btnLog">Log</button>
   <button class="ghost" id="btnSettings">AI settings</button>
 </header>
@@ -267,6 +268,18 @@
   <div class="row end">
     <button type="button" class="ghost" id="closeSettings">Close</button>
     <button type="button" class="primary small" id="saveSettings">Save</button>
+  </div>
+</dialog>
+
+<dialog id="resultsDlg" class="wide">
+  <h2>Results</h2>
+  <p class="hint">After you post a clip, press Track on it and paste the link. The app reads the public view count and compares your clips, so you can see which hooks, styles and lengths work for your audience. Once six or more clips have view counts, clear patterns are also passed to the AI when it picks moments.</p>
+  <div id="resInsights"></div>
+  <div id="resTable"></div>
+  <p class="hint" id="resNote"></p>
+  <div class="row end">
+    <button type="button" class="ghost" id="resRefresh">Update view counts</button>
+    <button type="button" class="primary small" id="resClose">Close</button>
   </div>
 </dialog>
 

@@ -61,6 +61,14 @@ a soft ambient sound can be added instead.
 The first run downloads the voice model (about 350 MB, one time). No account or key is needed for the voice.
 Stories are written by the AI chosen under AI settings; without one, a built-in story for the chosen theme is used.
 
+## Results tracker
+
+After you post a clip, press **Track** on it and paste the link of the posted video. The app reads its public
+view count (YouTube and usually TikTok; for Instagram, type the number in by hand) and the **Results** window
+compares your clips by hook type, caption style, length, cold open and platform. Press **Update view counts**
+now and then. Once six or more clips have view counts, clear patterns are passed to the AI when it picks
+moments for your next video. With few clips the averages can mislead, so treat them as hints.
+
 ## Turning on the AI
 
 Without an AI the app picks moments with simple offline scoring and uses built-in stories. With one, the AI
