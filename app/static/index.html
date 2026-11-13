@@ -17,11 +17,16 @@
 
 <main>
   <section class="panel" id="controls">
+    <div class="row presets">
+      <select id="presetSel"><option value="">Saved presets...</option></select>
+      <button type="button" class="ghost" id="presetSave" title="Save all current settings under a name">Save as preset</button>
+      <button type="button" class="link" id="presetDel" hidden>delete</button>
+    </div>
     <div class="seg big" id="mode"></div>
     <div class="card">
       <h2>1. Source</h2>
       <div class="only-clips">
-        <input type="url" id="url" placeholder="Paste a YouTube link, e.g. https://www.youtube.com/watch?v=..." autocomplete="off">
+        <textarea id="url" rows="2" placeholder="Paste a YouTube link. Several links (one per line) make one run each." autocomplete="off"></textarea>
         <div class="row between">
           <label class="file"><input type="file" id="video" accept="video/*"><span id="videoName">or upload a video file</span></label>
           <button class="link" id="clearVideo" hidden>remove file</button>
@@ -30,8 +35,26 @@
       <div class="only-story">
         <label class="drop"><input type="file" id="footage" accept="video/*" multiple>
           <b>Choose your video clips</b><span id="footageName">Select several files at once: drone shots, landscapes, b-roll</span></label>
+        <label class="check"><input type="checkbox" id="stock_footage"> Without clips of my own, use free stock footage that matches the script</label>
+        <div id="pexelsRow">
+          <div class="row between"><label style="margin:6px 0">Pexels API key (free)</label>
+            <a class="hint" href="https://www.pexels.com/api/" target="_blank" rel="noopener" style="color:var(--accent)">Get a free key</a></div>
+          <input type="password" id="pexelsKey" autocomplete="off" placeholder="paste the key, it is saved on this computer">
+          <p class="hint" id="pexelsState"></p>
+        </div>
+        <label>Topic: what should the video be about? (leave empty for a motivational story)</label>
+        <div class="row">
+          <input type="text" id="story_topic" maxlength="300" placeholder="e.g. why octopuses are so smart" style="flex:1">
+          <button type="button" class="ghost" id="ideasBtn" title="Let the AI suggest ideas">Ideas</button>
+        </div>
+        <div id="ideasBox" hidden>
+          <div class="row"><input type="text" id="ideasNiche" maxlength="200" placeholder="Your niche, e.g. space, history, fitness" style="flex:1">
+            <button type="button" class="ghost" id="ideasGo">Suggest</button></div>
+          <div id="ideasList"></div>
+        </div>
         <div class="grid2">
-          <div><label>Story theme</label><select id="story_theme"></select></div>
+          <div id="formatRow"><label>Format</label><select id="story_format"></select></div>
+          <div id="themeRow"><label>Story theme</label><select id="story_theme"></select></div>
           <div><label>Tone</label><select id="story_tone"></select></div>
         </div>
         <label>Or paste your own text (leave empty to have the story written for you)</label>
@@ -250,6 +273,7 @@
       <div class="row between wrap">
         <h2 id="resultsTitle"></h2>
         <div class="row">
+          <a class="ghost btnlink" id="transcriptLink" target="_blank" rel="noopener" hidden>Transcript</a>
           <button class="ghost" id="remix" title="Render again from the same video with the settings on the left. Skips download and transcription.">Re-run with current settings</button>
           <button class="ghost" id="openFolder">Open folder</button>
         </div>

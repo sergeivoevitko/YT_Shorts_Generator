@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import config, tracker
 from .jobs import DEFAULTS, JobManager, new_id
-from .pipeline import captions, compile as comp, llm, render, story, transcribe, voice
+from .pipeline import captions, compile as comp, llm, render, stock, story, transcribe, voice
 
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")           # two math libraries in one process must not abort it
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")  # harmless Windows notice, hides real messages
@@ -51,6 +51,8 @@ def get_config():
         "comp_themes": {k: v[0] for k, v in comp.THEMES.items()},
         "comp_styles": comp.STYLES,
         "voices": voice.VOICES,
+        "story_formats": story.FORMATS,
+        "pexels_key": bool(stock.api_key()),
         "story_themes": story.THEMES,
         "story_tones": story.TONES,
         "voice_model": all((voice.model_dir() / f).exists() for f in voice.MODEL_FILES),
@@ -63,6 +65,10 @@ def get_config():
 def set_settings(payload: dict):
     """Save the AI provider choice. Keys are kept per provider, only on this computer."""
     data: dict = {}
+    if "pexels_key" in payload:
+        config.save_settings({"pexels_key": str(payload["pexels_key"]).strip()[:120]})
+        if set(payload) == {"pexels_key"}:
+            return config.system_status()
     provider = payload.get("provider")
     if provider in llm.PROVIDERS:
         data["provider"] = provider
@@ -231,6 +237,62 @@ def tracker_delete(entry_id: str):
     return tracker_list()
 
 
+@app.post("/api/ideas")
+def make_ideas(payload: dict):
+    try:
+        found = story.ideas(str(payload.get("niche", ""))[:200], 10, lambda msg: None)
+    except Exception as exc:
+        raise HTTPException(400, str(exc)[:300])
+    return {"ideas": found}
+
+
+PRESETS = config.WORKSPACE / "presets.json"
+
+
+def _presets() -> dict:
+    try:
+        return json.loads(PRESETS.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+@app.get("/api/presets")
+def presets_list():
+    return {"presets": sorted(_presets())}
+
+
+@app.get("/api/presets/{name}")
+def presets_get(name: str):
+    data = _presets()
+    if name not in data:
+        raise HTTPException(404, "Preset not found")
+    return data[name]
+
+
+@app.post("/api/presets")
+def presets_save(payload: dict):
+    name = re.sub(r"\s+", " ", str(payload.get("name", ""))).strip()[:40]
+    settings = payload.get("settings")
+    if not name or not isinstance(settings, dict):
+        raise HTTPException(400, "Give the preset a name.")
+    # Per-video text is not part of a look, so it is left out.
+    keep = {k: v for k, v in settings.items() if k not in ("story_text", "story_topic", "instructions", "header_text")}
+    data = _presets()
+    data[name] = keep
+    config.ensure_dirs()
+    PRESETS.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    return {"presets": sorted(data)}
+
+
+@app.delete("/api/presets/{name}")
+def presets_delete(name: str):
+    data = _presets()
+    data.pop(name, None)
+    config.ensure_dirs()
+    PRESETS.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    return {"presets": sorted(data)}
+
+
 @app.get("/api/log")
 def get_log(lines: int = 300):
     try:
@@ -279,6 +341,7 @@ def create_job(url: str = Form(""), settings: str = Form("{}"), reuse: str = For
     job_dir = config.JOBS_DIR / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
     source: dict = {}
+    extra_links: list[str] = []
     url = url.strip()
 
     old = manager.get(reuse) if reuse else None
@@ -313,7 +376,7 @@ def create_job(url: str = Form(""), settings: str = Form("{}"), reuse: str = For
     elif mode == "story" or (old and old.source.get("kind") == "story"):
         if old:
             files = [f for f in old.source.get("files", []) if Path(f).exists()]
-            if not files:
+            if not files and old.source.get("files"):
                 raise HTTPException(400, "The earlier run's footage is no longer available. Upload the clips again.")
             source = {"kind": "story", "files": files, "reuse": old.source.get("reuse") or old.id, "title": "Narrated video"}
             if old.source.get("music") and Path(old.source["music"]).exists():
@@ -327,8 +390,10 @@ def create_job(url: str = Form(""), settings: str = Form("{}"), reuse: str = For
                 dest = job_dir / f"source_{i + 1:02d}{ext}"
                 _save_upload(up, dest)
                 files.append(str(dest))
-            if not files:
-                raise HTTPException(400, "Choose at least one video clip of your footage.")
+            opts_ok = json.loads(settings or "{}")
+            if not files and not (opts_ok.get("stock_footage", True) and stock.api_key()):
+                raise HTTPException(400, "Choose at least one video clip of your footage, or add a free Pexels key "
+                                         "for stock footage.")
             source = {"kind": "story", "files": files, "title": "Narrated video"}
     elif reuse:
         root = (old.source.get("reuse") or old.id) if old else ""
@@ -345,9 +410,14 @@ def create_job(url: str = Form(""), settings: str = Form("{}"), reuse: str = For
         _save_upload(video, dest)
         source = {"file": str(dest), "title": Path(video.filename).stem}
     elif url:
-        if not re.match(r"^https?://", url):
-            raise HTTPException(400, "Paste a full link that starts with http:// or https://")
-        source = {"url": url}
+        links = [x for x in re.split(r"[\s,]+", url) if x]
+        bad = [x for x in links if not re.match(r"^https?://", x)]
+        if bad:
+            raise HTTPException(400, f"'{bad[0][:60]}' is not a full link. Each link must start with http:// or https://")
+        if len(links) > 20:
+            raise HTTPException(400, "Paste at most 20 links at once.")
+        source = {"url": links[0]}
+        extra_links = links[1:]
     else:
         raise HTTPException(400, "Paste a YouTube link or choose a video file.")
 
@@ -360,7 +430,21 @@ def create_job(url: str = Form(""), settings: str = Form("{}"), reuse: str = For
         source["music"] = str(dest)
 
     job = manager.create(source, opts, job_id)
-    return job.to_dict()
+    result = job.to_dict()
+    # Several links: one run per link, queued one after another with the same settings.
+    for link in extra_links:
+        more = dict(source, url=link)
+        if source.get("music"):
+            jid = new_id()
+            (config.JOBS_DIR / jid).mkdir(parents=True, exist_ok=True)
+            copy = config.JOBS_DIR / jid / Path(source["music"]).name
+            shutil.copy(source["music"], copy)
+            more["music"] = str(copy)
+            manager.create(more, opts, jid)
+        else:
+            manager.create(more, opts)
+    result["batch"] = 1 + len(extra_links)
+    return result
 
 
 @app.get("/api/jobs")
@@ -462,7 +546,7 @@ def get_logo():
 @app.get("/media/{job_id}/{name}")
 def media(job_id: str, name: str, download: int = 0):
     job = manager.get(job_id)
-    if not job or not re.fullmatch(r"[\w.\-]+", name) or Path(name).suffix not in (".mp4", ".jpg", ".txt"):
+    if not job or not re.fullmatch(r"[\w.\-]+", name) or Path(name).suffix not in (".mp4", ".jpg", ".txt", ".srt"):
         raise HTTPException(404, "Not found")
     path = job.dir / name
     if not path.is_file():

@@ -69,6 +69,26 @@ compares your clips by hook type, caption style, length, cold open and platform.
 now and then. Once six or more clips have view counts, clear patterns are passed to the AI when it picks
 moments for your next video. With few clips the averages can mislead, so treat them as hints.
 
+## Videos about any topic, with or without footage
+
+In **My footage + story**, type a **topic** (for example "why octopuses are so smart") and choose a format
+(surprising facts, explainer, story, top list, motivational). The AI writes a script with a hook, the local
+voice reads it, and captions follow the voice. Press **Ideas** to have the AI suggest topics for your niche.
+
+You do not need footage of your own. With **free stock footage** on and no clips chosen, the app searches
+Pexels for footage that matches each part of the script and cuts it to the narration. This needs a free
+Pexels API key (pexels.com/api), pasted once in the story settings. Pexels footage is free to use, including
+commercially; the creators are listed in `post_text.txt`.
+
+## Presets, several links, caption files
+
+- **Presets**: save every setting under a name ("Podcast clips", "Facts channel") with **Save as preset** at
+  the top left, and switch between them from the list.
+- **Several links at once**: paste several YouTube links, one per line. Each becomes its own run, queued one
+  after another with the same settings.
+- **Caption files**: every clip has a "Download captions (.srt)" link, for uploading captions to YouTube or
+  editing elsewhere. The **Transcript** button above the clips opens the whole video's transcript with times.
+
 ## Compilation
 
 Switch to **Compilation** at the top left to turn several videos into one "best moments" video.

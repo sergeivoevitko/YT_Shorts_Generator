@@ -158,3 +158,12 @@ body:not([data-mode=comp]) .only-comp { display: none !important; }
 .cand .src { color: var(--accent); }
 
 body[data-mode=story] .no-story { display: none !important; }
+
+textarea#url { resize: vertical; min-height: 44px; }
+.presets select { flex: 1; padding: 8px 10px; font-size: 13.5px; }
+.presets button.ghost { font-size: 13px; padding: 8px 12px; white-space: nowrap; }
+.idea { display: block; width: 100%; text-align: left; margin-top: 6px; padding: 8px 10px; font-size: 13px; }
+.idea b { display: block; color: var(--text); }
+.idea span { color: var(--muted); }
+.btnlink { display: inline-block; text-decoration: none; color: var(--text); border: 1px solid var(--line); border-radius: 10px; padding: 8px 14px; }
+.clip .srt { font-size: 12px; color: var(--muted); text-decoration: underline dotted; }

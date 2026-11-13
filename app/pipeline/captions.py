@@ -107,6 +107,22 @@ def group_words(words: list[dict], max_words: int, max_chars: int, gap: float = 
     return groups
 
 
+def srt(words: list[dict], max_words: int = 10, max_chars: int = 48) -> str:
+    """Standard subtitle file (.srt) for uploading captions to YouTube, TikTok or an editor."""
+    def stamp(t: float) -> str:
+        ms = max(0, int(round(t * 1000)))
+        return f"{ms // 3600000:02d}:{ms // 60000 % 60:02d}:{ms // 1000 % 60:02d},{ms % 1000:03d}"
+    blocks, n = [], 0
+    for group in group_words(words, max_words, max_chars, gap=0.6):
+        text = " ".join(w["w"].strip() for w in group if w["w"].strip())
+        if not text:
+            continue
+        n += 1
+        end = max(group[-1]["e"], group[0]["s"] + 0.3)
+        blocks.append(f"{n}\n{stamp(group[0]['s'])} --> {stamp(end)}\n{text}\n")
+    return "\n".join(blocks)
+
+
 def build_ass(words: list[dict], duration: float, width: int, height: int, style_key: str | None,
               emphasis: list[str], hook_text: str, hook_style: str | None, hook_seconds: float,
               position: str = "lower", scale: float = 1.0, brand: dict | None = None,

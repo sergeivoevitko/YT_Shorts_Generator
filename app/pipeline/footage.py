@@ -250,6 +250,7 @@ def render_story(story: dict, words: list[dict], narration: str, narration_dur: 
     if not (job_dir / out_name).exists():
         raise RuntimeError(f"Finishing video {index} produced no file.")
 
+    (job_dir / f"{name}.srt").write_text(captions.srt(timed), encoding="utf-8")
     thumb = f"{name}.jpg"
     subprocess.run([config.ffmpeg_path(), "-hide_banner", "-loglevel", "error", "-y", "-ss", "1.5", "-i", out_name,
                     "-frames:v", "1", "-vf", "scale=360:-2", thumb], cwd=str(job_dir), capture_output=True)
@@ -260,5 +261,5 @@ def render_story(story: dict, words: list[dict], narration: str, narration_dur: 
         "source_start": 0, "source_end": 0, "style": style_key, "width": width, "height": height, "fps": round(fps, 2),
         "title": story["title"], "hook": story.get("hook", ""), "description": story.get("description", ""),
         "hashtags": story.get("hashtags", []), "score": 0, "reason": "", "scores": {},
-        "engine": story.get("engine", ""), "transcript": story["script"],
+        "engine": story.get("engine", ""), "transcript": story["script"], "srt": f"{name}.srt",
     }

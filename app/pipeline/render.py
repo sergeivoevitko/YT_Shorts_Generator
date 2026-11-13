@@ -527,6 +527,8 @@ def render_clip(src: str, info: dict, clip: dict, all_words: list[dict], setting
                     f"{min(1.0, out_dur / 2):.2f}", "-i", out_name, "-frames:v", "1", "-vf", "scale=360:-2", thumb],
                    cwd=str(job_dir), capture_output=True)
     (job_dir / ass_name).unlink(missing_ok=True)
+    srt_name = f"{name}.srt"
+    (job_dir / srt_name).write_text(captions.srt(words), encoding="utf-8")
     log(f"Clip {index} rendered: {out_dur:.1f}s, style {style_key or 'no captions'}, {len(segs) - 1} cuts "
         f"({fillers} filler words), {plan['pieces']} camera positions"
         + (f", {plan['duo_shots']} two-person shots " + ("shown as split screen" if plan.get("split") else
@@ -543,5 +545,5 @@ def render_clip(src: str, info: dict, clip: dict, all_words: list[dict], setting
         "scores": clip.get("scores") or {}, "variant": clip.get("variant", ""), "cold_open": bool(teaser),
         "hook_type": next((h.get("type", "") for h in clip.get("hooks") or [] if h.get("text") == clip.get("hook")), ""),
         "engine": clip.get("engine", "offline"),
-        "transcript": " ".join(w["w"] for w in all_words[w0:w1 + 1]),
+        "transcript": " ".join(w["w"] for w in all_words[w0:w1 + 1]), "srt": srt_name,
     }

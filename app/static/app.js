@@ -108,7 +108,14 @@ function refreshHints() {
     : REFRAME[settings.reframe][1];
   $("useAiLabel").textContent = story ? "Let the AI write the story" : "Let the AI pick the moments and write the hooks";
   if (!$("go").disabled) $("go").textContent = goLabel();
-  $("storyHint").textContent = settings.story_text.trim()
+  const topic = (settings.story_topic || "").trim();
+  $("formatRow").hidden = !topic;
+  $("themeRow").hidden = !!topic;
+  $("pexelsRow").hidden = !settings.stock_footage;
+  $("pexelsState").textContent = cfg.pexels_key ? "A key is saved. Paste a new one to replace it." : "No key saved yet.";
+  $("storyHint").textContent = topic && !settings.story_text.trim()
+    ? (cfg.status.ai.ready ? `${cfg.status.ai.name} will write a script about this topic.` : "Writing about a topic needs an AI: open AI settings and connect one (Groq and Gemini are free).")
+    : settings.story_text.trim()
     ? `Your text: about ${Math.round(settings.story_text.trim().split(/\s+/).length / 2.5)} seconds when spoken. Length and theme are ignored.`
     : cfg.status.ai.ready && settings.use_ai ? `${cfg.status.ai.name} will write an original story for each video.`
     : "Without an AI set up, one of the built-in stories for this theme is used.";
@@ -143,7 +150,31 @@ async function init() {
   segmented("mode", MODES, "mode", refreshHints);
   const options = (id, map) => $(id).replaceChildren(...Object.entries(map).map(([k, v]) => el("option", { value: k, textContent: v })));
   options("story_theme", cfg.story_themes); options("story_tone", cfg.story_tones); options("voice", cfg.voices);
-  for (const id of ["story_theme", "story_tone", "story_text", "voice", "transition", "footage_order"]) bind(id, id);
+  options("story_format", cfg.story_formats);
+  for (const id of ["story_theme", "story_tone", "story_text", "voice", "transition", "footage_order", "story_topic", "story_format"]) bind(id, id);
+  bind("stock_footage", "stock_footage", "check");
+  $("pexelsKey").onchange = async () => {
+    const key = $("pexelsKey").value.trim();
+    if (!key) return;
+    await api("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pexels_key: key }) });
+    cfg.pexels_key = true; $("pexelsKey").value = ""; refreshHints();
+  };
+  $("ideasBtn").onclick = () => { $("ideasBox").hidden = !$("ideasBox").hidden; };
+  $("ideasGo").onclick = async () => {
+    $("ideasList").replaceChildren(el("p", { className: "hint", textContent: "Thinking of ideas..." }));
+    try {
+      const r = await api("/api/ideas", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ niche: $("ideasNiche").value }) });
+      $("ideasList").replaceChildren(...r.ideas.map((idea) => {
+        const b = el("button", { type: "button", className: "idea" }, [el("b", { textContent: idea.topic }), el("span", { textContent: `${idea.format}: ${idea.angle}` })]);
+        b.onclick = () => {
+          settings.story_topic = idea.topic; settings.story_format = idea.format; save();
+          $("story_topic").value = idea.topic; $("story_format").value = idea.format; $("ideasBox").hidden = true; refreshHints();
+        };
+        return b;
+      }));
+    } catch (err) { $("ideasList").replaceChildren(el("p", { className: "error", textContent: err.message })); }
+  };
+  presets();
   bind("story_seconds", "story_seconds", "num", "storySecVal", (v) => `about ${v} seconds`);
   bind("num_videos", "num_videos", "num", "numVideosVal");
   bind("voice_speed", "voice_speed", "num", "voiceSpeedVal", (v) => Math.round(v * 100) + "%");
@@ -439,6 +470,44 @@ function youtubeAccess() {
   load().catch(() => {});
 }
 
+function presets() {
+  const load = async (pick) => {
+    const r = await api("/api/presets");
+    $("presetSel").replaceChildren(el("option", { value: "", textContent: r.presets.length ? "Saved presets..." : "No saved presets yet" }),
+      ...r.presets.map((n) => el("option", { value: n, textContent: n })));
+    $("presetSel").value = pick || "";
+    $("presetDel").hidden = !$("presetSel").value;
+  };
+  $("presetSel").onchange = async () => {
+    const name = $("presetSel").value;
+    $("presetDel").hidden = !name;
+    if (!name) return;
+    const data = await api("/api/presets/" + encodeURIComponent(name));
+    const keep = { story_text: settings.story_text, story_topic: settings.story_topic, instructions: settings.instructions, header_text: settings.header_text };
+    settings = Object.assign({}, cfg.defaults, data, keep);
+    save();
+    localStorage.setItem("clipforge.preset", name);
+    location.reload();  // simplest way to redraw every control with the preset's values
+  };
+  $("presetSave").onclick = async () => {
+    const name = prompt("Name for this preset (for example 'Podcast clips' or 'Facts channel'):", $("presetSel").value || "");
+    if (!name || !name.trim()) return;
+    await api("/api/presets", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: name.trim(), settings }) });
+    localStorage.setItem("clipforge.preset", name.trim());
+    load(name.trim());
+  };
+  $("presetDel").onclick = async () => {
+    const name = $("presetSel").value;
+    if (!name || !confirm(`Delete the preset '${name}'?`)) return;
+    await api("/api/presets/" + encodeURIComponent(name), { method: "DELETE" });
+    localStorage.removeItem("clipforge.preset");
+    load("");
+  };
+  let last = "";
+  try { last = localStorage.getItem("clipforge.preset") || ""; } catch (e) { /* ignore */ }
+  load(last).catch(() => {});
+}
+
 function brandControls() {
   const pick = $("brandColorPick"), on = $("brandColorOn");
   pick.value = settings.brand_color_pick || "#ffe100";
@@ -552,7 +621,10 @@ async function submit(reuse) {
     for (const f of files) form.append("footage", f);
   } else if (settings.mode === "story") {
     const files = [...$("footage").files];
-    if (!files.length) { $("formError").textContent = "Choose at least one video clip of your footage first."; return; }
+    if (!files.length && !(settings.stock_footage && cfg.pexels_key)) {
+      $("formError").textContent = settings.stock_footage ? "Choose your clips, or paste a free Pexels key for stock footage." : "Choose at least one video clip of your footage first.";
+      return;
+    }
     form.append("mode", "story");
     for (const f of files) form.append("footage", f);
     if (!cfg.voice_model) $("formError").textContent = "";
@@ -569,6 +641,7 @@ async function submit(reuse) {
   $("go").textContent = !reuse && (settings.mode === "story" || (settings.mode === "comp" && $("compFiles").files.length) || $("video").files[0]) ? "Uploading..." : "Starting...";
   try {
     const job = await api("/api/jobs", { method: "POST", body: form });
+    if (job.batch > 1) $("formError").textContent = `${job.batch} runs queued, one per link. The first is shown here; the others appear under Previous runs.`;
     watch(job.id);
     window.scrollTo({ top: 0, behavior: "smooth" });
   } catch (err) {
@@ -620,6 +693,8 @@ function render(job) {
   $("results").hidden = clips.length === 0;
   $("remix").hidden = $("openFolder").hidden = busy;
   if (clips.length) {
+    $("transcriptLink").hidden = !(job.kind === "clips" && job.status === "done");
+    $("transcriptLink").href = `/media/${job.id}/transcript.txt`;
     if (job.kind === "compilation") {
       $("resultsTitle").textContent = `Compilation ready, moments ${!job.engine || job.engine === "offline" ? "picked by offline scoring" : "picked by " + job.engine}`;
     } else if (job.kind === "story") {
@@ -743,6 +818,7 @@ function clipCard(jobId, c) {
       el("div", { className: "title", textContent: c.title }),
       el("div", { className: "text", textContent: `${c.description} ${tags}` }),
       el("div", { className: "why", style: chapters ? "white-space:pre-line;font-style:normal" : "", textContent: chapters || (isStory ? c.transcript : c.reason) }),
+      ...(c.srt ? [el("a", { className: "srt", href: base + c.srt + "?download=1", textContent: "Download captions (.srt)", title: "Subtitle file for uploading captions or editing elsewhere" })] : []),
       el("div", { className: "actions" }, [
         el("a", { className: "dl", href: base + c.file + "?download=1", textContent: "Download" }), ...(isStory ? [] : [edit]), copy, track]),
     ]),

@@ -12,7 +12,7 @@ import uuid
 from pathlib import Path
 
 from . import config, tracker
-from .pipeline import analyze, captions, compile as comp, download, footage, llm, reframe, render, story, transcribe, voice
+from .pipeline import analyze, captions, compile as comp, download, footage, llm, reframe, stock, render, story, transcribe, voice
 
 DEFAULTS = {
     "aspect": "9:16", "resolution": "1080p", "fps": "source", "quality": "balanced", "encoder": "auto",
@@ -28,6 +28,7 @@ DEFAULTS = {
     "brand_color": "", "brand_font": "", "handle_text": "",
     # "My footage + story" mode
     "story_theme": "motivation", "story_tone": "cinematic", "story_text": "", "story_seconds": 40,
+    "story_topic": "", "story_format": "facts", "stock_footage": True,
     "num_videos": 1, "voice": voice.DEFAULT_VOICE, "voice_speed": 0.95, "transition": "crossfade",
     "footage_order": "upload", "ambient_pad": True,
     "whisper_model": "small.en", "speech_engine": "local", "use_ai": True, "instructions": "",
@@ -82,6 +83,9 @@ def clean_settings(raw: dict) -> dict:
     s["story_theme"] = s["story_theme"] if s["story_theme"] in story.THEMES else "motivation"
     s["story_tone"] = s["story_tone"] if s["story_tone"] in story.TONES else "cinematic"
     s["story_text"] = str(s["story_text"])[:4000]
+    s["story_topic"] = str(s["story_topic"])[:300]
+    s["story_format"] = s["story_format"] if s["story_format"] in story.FORMATS else "facts"
+    s["stock_footage"] = bool(s["stock_footage"])
     s["story_seconds"] = _num(s["story_seconds"], 15, 90, 40)
     s["num_videos"] = _num(s["num_videos"], 1, 8, 1, int)
     s["voice"] = s["voice"] if s["voice"] in voice.VOICES else voice.DEFAULT_VOICE
@@ -381,8 +385,12 @@ class JobManager:
 
         up = stage("footage")
         files = [f for f in job.source.get("files", []) if Path(f).exists()]
-        if not files:
-            raise RuntimeError("The uploaded footage is no longer available. Upload the clips again.")
+        use_stock = not files
+        if use_stock and not s["stock_footage"]:
+            raise RuntimeError("No footage was uploaded. Upload your clips, or turn on free stock footage.")
+        if use_stock and not stock.api_key():
+            raise RuntimeError("No footage was uploaded, and stock footage needs a free Pexels API key. Get one at "
+                               "pexels.com/api and paste it in the story settings, or upload your own clips.")
         clips = []
         for i, path in enumerate(files):
             up(i / len(files), f"Looking through your footage ({i + 1} of {len(files)})")
@@ -391,13 +399,15 @@ class JobManager:
             except Exception as exc:
                 log(f"Skipped {Path(path).name}: {exc}")
         clips = [c for c in clips if c["duration"] >= 1.0]
-        if not clips:
+        if not clips and not use_stock:
             raise RuntimeError("None of the uploaded files could be read as video.")
-        log(f"Footage: {len(clips)} clips, {sum(c['duration'] for c in clips):.0f} seconds in total.")
+        if clips:
+            log(f"Footage: {len(clips)} clips, {sum(c['duration'] for c in clips):.0f} seconds in total.")
 
         up = stage("story")
         n = s["num_videos"]
-        up(0.2, "Writing the story" if not s["story_text"].strip() else "Preparing your text")
+        up(0.2, "Preparing your text" if s["story_text"].strip() else
+           f"Writing a script about {s['story_topic'][:40]}" if s["story_topic"].strip() else "Writing the story")
         stories, origin = story.get_stories(n, s, log)
         job.engine = origin
         job.title = stories[0]["title"] if n == 1 else f"{n} narrated videos"
@@ -432,15 +442,34 @@ class JobManager:
             st["engine"] = origin
 
             up = stage("render")
+            shots = clips
+            if use_stock:  # footage that matches this script, searched with the AI's terms in script order
+                w, h = render.output_size(s["aspect"], s["resolution"])
+                got = stock.fetch(st.get("search_terms") or [], job.dir / f"stock{i:02d}", h >= w, max(w, h), dur,
+                                  lambda p, msg, i=i: up((i - 1 + p * 0.3) / n, msg), cancelled, log)
+                shots = []
+                for item in got:
+                    try:
+                        shots.append(footage.analyze_clip(item["path"]))
+                    except Exception as exc:
+                        log(f"Skipped stock clip for '{item['term']}': {exc}")
+                shots = [c for c in shots if c["duration"] >= 1.0]
+                if not shots:
+                    raise RuntimeError("The stock footage could not be read.")
+                st["credits"] = sorted({item["credit"] for item in got})
             if s["caption_style"] == "none":
                 style = None
             elif s["caption_style"] == "mix":
                 style = captions.MIX_ORDER[(i - 1) % len(captions.MIX_ORDER)]
             else:
                 style = s["caption_style"]
-            result = footage.render_story(st, words, wav_path, dur, clips, s, job.dir, i, style, music,
-                                          lambda p, msg, i=i: up((i - 1 + p) / n, f"{msg} ({i} of {n})"),
+            local = dict(s, footage_order="upload") if use_stock else s
+            result = footage.render_story(st, words, wav_path, dur, shots, local, job.dir, i, style, music,
+                                          lambda p, msg, i=i: up((i - 1 + (0.3 + p * 0.7 if use_stock else p)) / n,
+                                                                  f"{msg} ({i} of {n})"),
                                           cancelled, log)
+            if st.get("credits"):
+                result["credits"] = st["credits"]
             job.clips.append(result)
             job.save()
         shutil.rmtree(fonts, ignore_errors=True)
@@ -818,6 +847,9 @@ class JobManager:
             tpath.write_text(json.dumps(transcript), encoding="utf-8")
             log(f"Transcribed {len(transcript['words'])} words in {len(transcript['sentences'])} sentences.")
         words, sentences = transcript["words"], transcript["sentences"]
+        stamp = lambda t: f"{int(t) // 3600}:{int(t) // 60 % 60:02d}:{int(t) % 60:02d}"
+        (job.dir / "transcript.txt").write_text(
+            f"{meta['title']}\n\n" + "\n".join(f"[{stamp(x['s'])}] {x['text']}" for x in sentences), encoding="utf-8")
 
         # 3. Find the moments ----------------------------------------------
         up = stage("analyze")
@@ -879,6 +911,8 @@ def _write_post_text(job: Job) -> None:
         if c.get("kind") == "compilation":
             lines += ["Chapters (paste into the description):"] + c.get("chapters", []) + [""]
             continue
+        if c.get("credits"):
+            lines.append("Stock footage from Pexels by " + ", ".join(c["credits"]))
         lines += [f"Script: {c['transcript']}", ""] if c.get("kind") == "story" else [f"Score: {c['score']}. {c['reason']}", ""]
     (job.dir / "post_text.txt").write_text("\n".join(lines), encoding="utf-8")
 

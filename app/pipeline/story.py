@@ -25,7 +25,44 @@ TONES = {
     "intense": "Intense, tough-love",
     "poetic": "Poetic and gentle",
 }
-WORDS_PER_SECOND = 2.5  # narration pace including pauses
+WORDS_PER_SECOND = 2.5
+
+# How a script on any topic is shaped (used when the creator types a topic).
+FORMATS = {
+    "facts": "Surprising facts: a fast run of 3 to 5 little-known facts, each one sentence or two",
+    "explainer": "Explainer: answer one question clearly, step by step, in plain words",
+    "story": "Story: tell one true or plausible story with a setup, a turn and a payoff",
+    "list": "Top list: a countdown of 3 to 5 items, best last",
+    "motivation": "Motivational: a short speech that builds to one clear idea",
+}
+
+TOPIC_PROMPT = """You write voiceover scripts for short vertical videos about any topic. The viewer \
+hears a narrator, reads the words as captions, and sees stock footage that matches what is said.
+
+Write for the ear:
+- Open with a line that stops the scroll: a surprising claim, a question, or a tension. Never open \
+with a greeting, "did you know" or "in this video".
+- Short, plain sentences. One idea per sentence. Vary the rhythm.
+- Be specific and correct. If you are not sure a fact is true, leave it out. No invented numbers, no \
+quotes attributed to real people.
+- End on a line worth remembering. Where it fits, let the last line echo the first so the video \
+loops cleanly. No call to like or subscribe.
+- Plain text a text-to-speech voice can read: no emojis, headings, stage directions, quotation marks \
+or lists with symbols; numbers written as words. Separate paragraphs with a blank line where the \
+narrator should pause.
+
+For each script also return:
+- title: 4 to 6 words, 20 to 40 characters, key word near the front.
+- hook: on-screen text for the first seconds, at most 7 words, different from the first spoken line.
+- description: one or two sentences, the point in the first 125 characters.
+- hashtags: 3 to 5 hashtags without the # sign.
+- emphasis_words: 5 to 10 single words from the script to highlight in the captions.
+- emojis: 2 to 4 cues, each a single word from the script (copied exactly) and one fitting emoji.
+- search_terms: one stock-footage search per paragraph or every two sentences, in script order, \
+5 to 10 in total. Each is 1 to 3 plain English words describing something a camera can film \
+(for example "ocean waves", "city traffic night", "chef cooking"), never abstract ideas.
+
+When asked for several scripts, give each a clearly different angle and opening."""  # narration pace including pauses
 
 SYSTEM_PROMPT = """You write short voiceover scripts for vertical videos made of nature, landscape and \
 drone footage. The viewer hears a narrator and reads the words as captions.
@@ -51,6 +88,8 @@ For each story also return:
 - hashtags: 3 to 5 hashtags without the # sign.
 - emphasis_words: 5 to 10 single words from the script to highlight in the captions.
 - emojis: 2 to 4 cues, each a single word from the script (copied exactly) and one fitting emoji.
+- search_terms: one stock-footage search per paragraph, in script order, 4 to 8 in total, each 1 to \
+3 plain English words for something a camera can film in nature (for example "mountain sunrise").
 
 When asked for several stories, make them clearly different in angle and opening."""
 
@@ -112,6 +151,7 @@ class Story(BaseModel):
     hashtags: List[str]
     emphasis_words: List[str]
     emojis: List[EmojiCue]
+    search_terms: List[str]
 
 
 class StoryBatch(BaseModel):
@@ -126,6 +166,7 @@ class LooseStory(BaseModel):
     hashtags: List[str] = []
     emphasis_words: List[str] = []
     emojis: List[EmojiCue] = []
+    search_terms: List[str] = []
 
 
 class LooseStoryBatch(BaseModel):
@@ -149,20 +190,31 @@ def _keywords(text: str, k: int = 8) -> list[str]:
     return [w for w, _ in sorted(counts.items(), key=lambda x: -x[1])[:k]]
 
 
+def _request(n: int, theme: str, tone: str, seconds: float, direction: str, topic: str, fmt: str) -> tuple[str, str]:
+    """(system prompt, user message) for a batch of scripts."""
+    words = int(seconds * WORDS_PER_SECOND)
+    kind = "script" if topic else "story"
+    user = f"Write {n} {kind if n == 1 else 'different ' + kind + 's'}.\n"
+    if topic:
+        user += f"Topic: {topic}\nFormat: {FORMATS.get(fmt, FORMATS['facts'])}\n"
+    else:
+        user += f"Theme: {THEMES.get(theme, theme)}\n"
+    user += (f"Tone: {TONES.get(tone, tone)}\n"
+             f"Length: about {words} words each (roughly {seconds:.0f} seconds when spoken). "
+             f"Stay within ten percent of that word count.\n")
+    if direction.strip():
+        user += f"Extra direction from the creator: {direction.strip()}\n"
+    return (TOPIC_PROMPT if topic else SYSTEM_PROMPT), user
+
+
 def write_with_claude(n: int, theme: str, tone: str, seconds: float, direction: str,
-                      log: Callable[[str], None]) -> list[dict]:
+                      log: Callable[[str], None], topic: str = "", fmt: str = "facts") -> list[dict]:
     import anthropic
 
     client = anthropic.Anthropic(api_key=config.get_api_key(), timeout=600.0)
     model = config.get_model()
-    words = int(seconds * WORDS_PER_SECOND)
-    user = (f"Write {n} {'story' if n == 1 else 'different stories'}.\n"
-            f"Theme: {THEMES.get(theme, theme)}\nTone: {TONES.get(tone, tone)}\n"
-            f"Length: about {words} words each (roughly {seconds:.0f} seconds when spoken). "
-            f"Stay within ten percent of that word count.\n")
-    if direction.strip():
-        user += f"Extra direction from the creator: {direction.strip()}\n"
-    kwargs = dict(model=model, max_tokens=16000, system=SYSTEM_PROMPT,
+    system, user = _request(n, theme, tone, seconds, direction, topic, fmt)
+    kwargs = dict(model=model, max_tokens=16000, system=system,
                   messages=[{"role": "user", "content": user}], thinking={"type": "adaptive"},
                   output_config={"effort": "high"}, output_format=StoryBatch)
     response = None
@@ -181,20 +233,14 @@ def write_with_claude(n: int, theme: str, tone: str, seconds: float, direction: 
 
 STORY_SHAPE = """{"stories": [{"title": "...", "hook": "...", "script": "First paragraph.\\n\\nSecond paragraph.", \
 "description": "...", "hashtags": ["...", "..."], "emphasis_words": ["...", "..."], \
-"emojis": [{"word": "...", "emoji": "🌄"}]}]}"""
+"emojis": [{"word": "...", "emoji": "🌄"}], "search_terms": ["...", "..."]}]}"""
 
 
 def write_with_provider(n: int, theme: str, tone: str, seconds: float, direction: str,
-                        log: Callable[[str], None]) -> list[dict]:
+                        log: Callable[[str], None], topic: str = "", fmt: str = "facts") -> list[dict]:
     """Story writing through a free or local provider."""
-    words = int(seconds * WORDS_PER_SECOND)
-    user = (f"Write {n} {'story' if n == 1 else 'different stories'}.\n"
-            f"Theme: {THEMES.get(theme, theme)}\nTone: {TONES.get(tone, tone)}\n"
-            f"Length: about {words} words each (roughly {seconds:.0f} seconds when spoken). "
-            f"Stay within ten percent of that word count.\n")
-    if direction.strip():
-        user += f"Extra direction from the creator: {direction.strip()}\n"
-    batch = llm.chat_json(SYSTEM_PROMPT, user, LooseStoryBatch, STORY_SHAPE, log, strict=StoryBatch)
+    system, user = _request(n, theme, tone, seconds, direction, topic, fmt)
+    batch = llm.chat_json(system, user, LooseStoryBatch, STORY_SHAPE, log, strict=StoryBatch)
     ai = llm.current()
     log(f"{ai['name']} ({ai['model']}) wrote {len(batch.stories)} stories.")
     return [s.model_dump() for s in batch.stories]
@@ -208,24 +254,33 @@ def get_stories(n: int, settings: dict, log: Callable[[str], None]) -> tuple[lis
         first = re.split(r"(?<=[.!?])\s", pasted)[0]
         story = {"title": " ".join(first.split()[:9]).rstrip(".,!?"), "hook": "", "script": pasted,
                  "description": " ".join(pasted.split()[:28]) + ("..." if len(pasted.split()) > 28 else ""),
-                 "hashtags": _keywords(pasted, 4) + ["motivation"], "emphasis_words": _keywords(pasted), "emojis": []}
+                 "hashtags": _keywords(pasted, 4) + ["motivation"], "emphasis_words": _keywords(pasted), "emojis": [],
+                 "search_terms": _keywords(pasted, 6)}
         return [dict(story) for _ in range(n)], "pasted"
 
+    topic = str(settings.get("story_topic", "")).strip()
     ai = llm.current()
+    if topic and not (ai["ready"] and settings.get("use_ai", True)):
+        raise RuntimeError("Writing a script about your topic needs an AI. Open AI settings and connect one "
+                           "(Groq and Gemini are free), or paste your own text instead.")
     if ai["ready"] and settings.get("use_ai", True):
         try:
             writer = write_with_claude if ai["provider"] == "claude" else write_with_provider
             stories = writer(n, theme, settings["story_tone"], float(settings["story_seconds"]),
-                             settings.get("instructions", ""), log)
+                             settings.get("instructions", ""), log, topic, settings.get("story_format", "facts"))
             for s in stories:
                 s["script"] = _clean_script(s["script"])
                 s["hashtags"] = [re.sub(r"[^A-Za-z0-9_]", "", h) for h in s["hashtags"] if h][:8]
+                s["search_terms"] = [" ".join(str(t).split()[:4]) for t in s.get("search_terms") or [] if str(t).strip()][:12] \
+                    or _keywords(s["script"], 6)
             stories = [s for s in stories if s["script"]]
             if stories:
                 while len(stories) < n:
                     stories.append(dict(stories[len(stories) % len(stories)]))
                 return stories[:n], ai["name"]
         except Exception as exc:
+            if topic:
+                raise RuntimeError(f"{ai['name']} could not write a script about '{topic}': {exc}") from exc
             log(f"{ai['name']} could not write the story ({type(exc).__name__}: {exc}). Using a built-in story instead.")
     else:
         log("No AI is set up and no text was pasted, so built-in stories are used.")
@@ -236,8 +291,70 @@ def get_stories(n: int, settings: dict, log: Callable[[str], None]) -> tuple[lis
         title, hook, script = BUILTIN[order[i % len(order)]]
         stories.append({"title": title, "hook": hook, "script": script, "description": title + ".",
                         "hashtags": _keywords(script, 3) + ["motivation", "nature"],
-                        "emphasis_words": _keywords(script), "emojis": []})
+                        "emphasis_words": _keywords(script), "emojis": [],
+                        "search_terms": ["mountain sunrise", "forest", "river", "ocean waves", "clouds sky", "hiking trail"]})
     return stories, "builtin"
+
+
+# ---------------------------------------------------------------------------
+# Idea generator
+# ---------------------------------------------------------------------------
+
+class Idea(BaseModel):
+    topic: str
+    format: str
+    angle: str
+
+
+class IdeaList(BaseModel):
+    ideas: List[Idea]
+
+
+class LooseIdea(BaseModel):
+    topic: str
+    format: str = "facts"
+    angle: str = ""
+
+
+class LooseIdeaList(BaseModel):
+    ideas: List[LooseIdea]
+
+
+IDEA_PROMPT = """You suggest ideas for short vertical videos (30 to 60 seconds) that are narrated by a \
+voiceover over stock footage, with no presenter on camera. Good ideas are specific, make people curious \
+in one line, and can be shown with ordinary footage. Avoid topics that need recent news, real people's \
+private lives, medical or financial advice, or facts you are not sure of.
+
+Return ideas as: topic (the video's subject in one specific line, under 90 characters), format (one of: \
+facts, explainer, story, list, motivation) and angle (one sentence on what makes it interesting)."""
+IDEA_SHAPE = '{"ideas": [{"topic": "...", "format": "facts", "angle": "..."}]}'
+
+
+def ideas(niche: str, count: int, log: Callable[[str], None]) -> list[dict]:
+    """Video ideas for a niche, from the AI chosen in AI settings."""
+    ai = llm.current()
+    if not ai["ready"]:
+        raise RuntimeError("Generating ideas needs an AI. Open AI settings and connect one (Groq and Gemini are free).")
+    user = f"Niche or audience: {niche.strip() or 'general curiosity'}\nGive {count} different ideas."
+    if ai["provider"] == "claude":
+        import anthropic
+
+        client = anthropic.Anthropic(api_key=config.get_api_key(), timeout=300.0)
+        resp = client.messages.parse(model=config.get_model(), max_tokens=8000, system=IDEA_PROMPT,
+                                     messages=[{"role": "user", "content": user}],
+                                     output_config={"effort": "medium"}, output_format=IdeaList)
+        if resp.parsed_output is None:
+            raise RuntimeError(f"Claude returned no ideas (stop reason: {resp.stop_reason}).")
+        items = [i.model_dump() for i in resp.parsed_output.ideas]
+    else:
+        items = [i.model_dump() for i in llm.chat_json(IDEA_PROMPT, user, LooseIdeaList, IDEA_SHAPE, log, strict=IdeaList).ideas]
+    out = []
+    for item in items:
+        if str(item.get("topic", "")).strip():
+            fmt = str(item.get("format", "facts")).lower().strip()
+            out.append({"topic": str(item["topic"]).strip()[:120], "format": fmt if fmt in FORMATS else "facts",
+                        "angle": str(item.get("angle", "")).strip()[:200]})
+    return out[:count]
 
 
 def align(script: str, heard: list[dict], duration: float) -> list[dict]:
